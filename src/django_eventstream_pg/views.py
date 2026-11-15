@@ -13,7 +13,16 @@ from django.utils.cache import add_never_cache_headers
 from django_eventstream_pg import conf
 from django_eventstream_pg import hub as hub_module
 from django_eventstream_pg.hub import Hub, get_hub
-from django_eventstream_pg.messages import CLOSE_TOPIC, CLOSED, CONNECTED, KEEPALIVE, Owner, Signal, parse_last_event_id
+from django_eventstream_pg.messages import (
+    CLOSE_TOPIC,
+    CLOSED,
+    CONNECTED,
+    KEEPALIVE,
+    EventIds,
+    Owner,
+    Signal,
+    format_event,
+)
 from django_eventstream_pg.models import StreamEvent
 
 KEEPALIVE_SECONDS = 15
@@ -35,16 +44,19 @@ async def stream(request: HttpRequest) -> HttpResponseBase:
     authorized = await sync_to_async(_authorize)(request, topics, known)
     if authorized is None:
         return HttpResponseForbidden()
-    owner, authorized_at = authorized
-    last_event_id = parse_last_event_id(request.headers.get("Last-Event-ID", ""))
-    messages = _messages(hub, topics, owner, authorized_at, last_event_id)
+    owner, authorized_at, ids = authorized
+    # An unsigned or foreign id resumes nothing; the stream starts with live events.
+    last_event_id = ids.unsign(request.headers.get("Last-Event-ID", ""))
+    messages = _messages(hub, topics, owner, authorized_at, ids, last_event_id)
     response = StreamingHttpResponse(messages, content_type="text/event-stream")
     add_never_cache_headers(response)
     return response
 
 
-def _authorize(request: HttpRequest, topics: list[str], known: int | None) -> tuple[Owner, int] | None:
-    """The stream's owner and the newest event id before the check, if every topic is allowed.
+def _authorize(request: HttpRequest, topics: list[str], known: int | None) -> tuple[Owner, int, EventIds] | None:
+    """The stream's owner, the newest event id before the check and its id signer.
+
+    None if a topic is not allowed.
 
     `known` is the hub's newest id. A hub that is not listening yet needs one query instead.
     """
@@ -55,13 +67,16 @@ def _authorize(request: HttpRequest, topics: list[str], known: int | None) -> tu
     if not all(can_subscribe(request, topic) for topic in topics):
         return None
     # Anonymous streams have no targets: close_streams() needs a user or a session login.
-    if not request.user.is_authenticated:
-        return Owner(frozenset()), 0
-    return Owner.of(user=str(request.user.pk), session=request.session.session_key), known or 0
+    if request.user.is_authenticated:
+        owner = Owner.of(user=str(request.user.pk), session=request.session.session_key)
+        authorized_at = known or 0
+    else:
+        owner, authorized_at = Owner(frozenset()), 0
+    return owner, authorized_at, EventIds(owner, topics)
 
 
 async def _messages(
-    hub: Hub, topics: list[str], owner: Owner, authorized_at: int, last_event_id: int | None
+    hub: Hub, topics: list[str], owner: Owner, authorized_at: int, ids: EventIds, last_event_id: int | None
 ) -> AsyncIterator[str]:
     await sync_to_async(_close_connection)()
     # Subscribed here, not in the view: a generator that never starts skips its finally.
@@ -72,14 +87,15 @@ async def _messages(
         yield CONNECTED
         # A close among the events since authorisation reached the hub before this queue existed.
         missed = (hub.last_id or 0) > authorized_at
-        if owner.targets and missed and await hub.closed_since(owner.targets, authorized_at):
+        if missed and await _revoked_since(hub, owner, authorized_at):
             yield CLOSED
             return
-        if last_event_id is not None:
+        # A close after the id took access away in between, so those events stay unread.
+        if last_event_id is not None and not await _revoked_since(hub, owner, last_event_id):
             replayed = await hub.replay(topics, sent)
             for message in replayed:
                 sent = message.id
-                yield message.sse
+                yield format_event(message, ids.sign(message.id))
             if len(replayed) == hub_module.REPLAY_BATCH:
                 return
         while True:
@@ -98,9 +114,14 @@ async def _messages(
             if item.id <= sent:
                 continue
             sent = item.id
-            yield item.sse
+            yield format_event(item, ids.sign(item.id))
     finally:
         hub.unsubscribe(queue)
+
+
+async def _revoked_since(hub: Hub, owner: Owner, event_id: int) -> bool:
+    # Anonymous streams have no targets, so no close can name them.
+    return bool(owner.targets) and await hub.closed_since(owner.targets, event_id)
 
 
 def _close_connection() -> None:

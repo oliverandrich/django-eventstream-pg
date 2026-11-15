@@ -1,10 +1,13 @@
 """SSE message format, NOTIFY payloads and the values streams exchange with the hub."""
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
-from functools import cached_property
+from functools import cached_property, lru_cache
+
+from django.core import signing
 
 # The PostgreSQL channel that carries "<id>:<topic>" for every stored event.
 CHANNEL = "eventstream_pg"
@@ -28,9 +31,11 @@ class Message:
     html: str
 
     @cached_property
-    def sse(self) -> str:
-        # Formatted once, however many streams receive the message.
-        return format_event(self)
+    def body(self) -> str:
+        """The SSE message without its id line, formatted once for every stream."""
+        lines = [f"event: {self.event}"] if self.event else []
+        lines += [f"data: {line}" for line in LINE_BREAK.split(self.html)]
+        return "\n".join(lines) + "\n\n"
 
 
 class Signal(Enum):
@@ -58,13 +63,37 @@ class Owner:
         return cls(frozenset(targets))
 
 
-def format_event(event: Message) -> str:
-    """The event as an SSE message. Each line of the html gets its own data field."""
-    lines = [f"id: {event.id}"]
-    if event.event:
-        lines.append(f"event: {event.event}")
-    lines += [f"data: {line}" for line in LINE_BREAK.split(event.html)]
-    return "\n".join(lines) + "\n\n"
+class EventIds:
+    """Signs the event ids of one stream for its owner and topics.
+
+    A Last-Event-ID then resumes only an id that a stream of the same user, session and topics
+    received. An unsigned or foreign id resumes nothing.
+    """
+
+    def __init__(self, owner: Owner, topics: list[str]) -> None:
+        self.salt = "django_eventstream_pg.ids:" + json.dumps([sorted(owner.targets), sorted(set(topics))])
+        self.signer = signing.Signer(salt=self.salt)
+
+    def sign(self, event_id: int) -> str:
+        return _sign(self.salt, event_id)
+
+    def unsign(self, value: str) -> int | None:
+        try:
+            return parse_last_event_id(self.signer.unsign(value))
+        except signing.BadSignature:
+            return None
+
+
+# Streams with the same owner and topics, such as anonymous readers of a public topic, share one
+# signature per event. The derived key depends on SECRET_KEY, which a running process keeps.
+@lru_cache(maxsize=4096)
+def _sign(salt: str, event_id: int) -> str:
+    return signing.Signer(salt=salt).sign(str(event_id))
+
+
+def format_event(event: Message, event_id: str) -> str:
+    """The event as an SSE message: the id line, then the formatted body."""
+    return f"id: {event_id}\n{event.body}"
 
 
 def notify_payload(event_id: int, topic: str) -> str:

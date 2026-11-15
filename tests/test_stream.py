@@ -43,6 +43,11 @@ def allow_every_topic(request: HttpRequest, topic: str) -> bool:  # noqa: ARG001
     return True
 
 
+def signed(event_id: int, *topics: str) -> str:
+    """The id an anonymous stream for `topics` sends for `event_id`."""
+    return messages.EventIds(messages.Owner(frozenset()), list(topics)).sign(event_id)
+
+
 def terminate_listener() -> None:
     """Ends every hub's LISTEN session, as a database restart would."""
     with connection.cursor() as cursor:
@@ -150,7 +155,7 @@ class StreamTest(StreamTestCase):
         await sync_to_async(publish.broadcast)("public:news", "<p>hi</p>")
         message = await self.next_message(stream)
         event = await StreamEvent.objects.aget()
-        self.assertEqual(message, f"id: {event.id}\ndata: <p>hi</p>\n\n")
+        self.assertEqual(message, f"id: {signed(event.id, 'public:news')}\ndata: <p>hi</p>\n\n")
 
     @stops_the_hub
     async def test_other_topics_do_not_reach_the_stream(self):
@@ -164,8 +169,27 @@ class StreamTest(StreamTestCase):
         seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
         missed = await StreamEvent.objects.acreate(topic="public:news", html="missed")
         await StreamEvent.objects.acreate(topic="public:other", html="elsewhere")
+        stream = await self.open_stream("public:news", headers={"Last-Event-ID": signed(seen.id, "public:news")})
+        self.assertEqual(await self.next_message(stream), f"id: {signed(missed.id, 'public:news')}\ndata: missed\n\n")
+
+    @stops_the_hub
+    async def test_an_unsigned_last_event_id_replays_nothing(self):
+        # Otherwise a client could pick any id and read the whole retention of a topic.
+        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
+        await StreamEvent.objects.acreate(topic="public:news", html="missed")
         stream = await self.open_stream("public:news", headers={"Last-Event-ID": str(seen.id)})
-        self.assertEqual(await self.next_message(stream), f"id: {missed.id}\ndata: missed\n\n")
+        await sync_to_async(publish.broadcast)("public:news", "<p>live</p>")
+        self.assertIn("<p>live</p>", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_the_id_a_stream_sends_resumes_it(self):
+        stream = await self.open_stream("public:news")
+        await sync_to_async(publish.broadcast)("public:news", "<p>seen</p>")
+        received = await self.next_message(stream)
+        last_event_id = received.split("\n", 1)[0].removeprefix("id: ")
+        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        resumed = await self.open_stream("public:news", headers={"Last-Event-ID": last_event_id})
+        self.assertIn("missed", await self.next_message(resumed))
 
     @stops_the_hub
     async def test_a_foreign_notify_leaves_the_listener_running(self):
@@ -182,7 +206,8 @@ class StreamTest(StreamTestCase):
         await StreamEvent.objects.acreate(topic="public:news", html="two")
         await StreamEvent.objects.acreate(topic="public:news", html="three")
         with mock.patch.object(hub_module, "REPLAY_BATCH", 1):
-            stream = await self.open_stream("public:news", headers={"Last-Event-ID": str(first.id)})
+            headers = {"Last-Event-ID": signed(first.id, "public:news")}
+            stream = await self.open_stream("public:news", headers=headers)
             self.assertIn("two", await self.next_message(stream))
             with self.assertRaises(StopAsyncIteration):
                 await self.next_message(stream)
@@ -228,6 +253,46 @@ class CloseStreamsTest(StreamTestCase):
         await self.assert_closed(first_stream)
         await sync_to_async(publish.broadcast)(f"user:{user.pk}", "<p>still here</p>")
         self.assertIn("still here", await self.next_message(second_stream))
+
+    async def signed_for(self, client: AsyncClient, user: User, event_id: int, *topics: str) -> str:
+        session = await client.asession()
+        owner = messages.Owner.of(user=str(user.pk), session=session.session_key)
+        return messages.EventIds(owner, list(topics)).sign(event_id)
+
+    @stops_the_hub
+    async def test_an_id_signed_for_another_owner_replays_nothing(self):
+        user = await User.objects.acreate_user("ada")
+        client = await self.logged_in_client(user)
+        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
+        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        headers = {"Last-Event-ID": signed(seen.id, "public:news")}
+        stream = await self.open_stream("public:news", client=client, headers=headers)
+        await sync_to_async(publish.broadcast)("public:news", "<p>live</p>")
+        self.assertIn("<p>live</p>", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_a_close_after_the_id_prevents_its_replay(self):
+        # The user lost access and got it back; the events in between stay unread.
+        user = await User.objects.acreate_user("ada")
+        client = await self.logged_in_client(user)
+        topic = f"user:{user.pk}"
+        seen = await StreamEvent.objects.acreate(topic=topic, html="seen")
+        await sync_to_async(publish.close_streams)(user=user)
+        await StreamEvent.objects.acreate(topic=topic, html="while revoked")
+        headers = {"Last-Event-ID": await self.signed_for(client, user, seen.id, topic)}
+        stream = await self.open_stream(topic, client=client, headers=headers)
+        await sync_to_async(publish.broadcast)(topic, "<p>live</p>")
+        self.assertIn("<p>live</p>", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_an_authenticated_stream_resumes_its_own_id(self):
+        user = await User.objects.acreate_user("ada")
+        client = await self.logged_in_client(user)
+        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
+        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        headers = {"Last-Event-ID": await self.signed_for(client, user, seen.id, "public:news")}
+        stream = await self.open_stream("public:news", client=client, headers=headers)
+        self.assertIn("missed", await self.next_message(stream))
 
     @stops_the_hub
     async def test_closing_by_user_closes_every_session(self):

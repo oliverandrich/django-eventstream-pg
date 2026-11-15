@@ -93,6 +93,10 @@ streams of that session, so other tabs lose the user's topics.
 ## Replay
 
 Every event is stored. A reconnecting browser sends `Last-Event-ID` and receives what it missed.
+Event ids are signed with `SECRET_KEY` for the user, the session and the topics of the stream.
+An unsigned id, or one signed for another stream, replays nothing; the stream starts with live events.
+A `close_streams()` for the owner after the id also skips the replay.
+The events from the time without access then stay unread.
 Run `manage.py prune_stream_events` regularly, for example hourly; it deletes events older than
 `EVENTSTREAM_PG["RETENTION_HOURS"]` (default 24).
 

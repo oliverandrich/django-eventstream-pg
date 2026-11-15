@@ -34,6 +34,8 @@ src/django_eventstream_pg/
 - An open stream holds no connection from Django's pool. The hub uses two connections of its own.
   `views._messages()` closes the request thread's connection after the response middleware.
 - The hub's connections bypass Django's connection setup, so `_connect()` applies `assume_role`.
+- A stream sends event ids signed by `EventIds` for its owner targets and topics.
+  Replay needs a validly signed id and no close for the owner after that id.
 - `__init__.py` must not import the model at module level. Django imports the package while it
   loads `INSTALLED_APPS`, before models can load.
 

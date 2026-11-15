@@ -30,21 +30,21 @@ def notified_ids(conn: psycopg.Connection[tuple[Any, ...]], count: int) -> list[
 class FormatTest(SimpleTestCase):
     def test_single_line(self):
         event = messages.Message(7, "public:news", "", "<p>hi</p>")
-        self.assertEqual(messages.format_event(event), "id: 7\ndata: <p>hi</p>\n\n")
+        self.assertEqual(messages.format_event(event, "7"), "id: 7\ndata: <p>hi</p>\n\n")
 
     def test_each_line_gets_a_data_field(self):
         event = messages.Message(8, "public:news", "", "<ul>\n<li>a</li>\n</ul>")
-        self.assertEqual(messages.format_event(event), "id: 8\ndata: <ul>\ndata: <li>a</li>\ndata: </ul>\n\n")
+        self.assertEqual(messages.format_event(event, "8"), "id: 8\ndata: <ul>\ndata: <li>a</li>\ndata: </ul>\n\n")
 
     def test_named_event(self):
         event = messages.Message(9, "user:1", "progress", "50")
-        self.assertEqual(messages.format_event(event), "id: 9\nevent: progress\ndata: 50\n\n")
+        self.assertEqual(messages.format_event(event, "9"), "id: 9\nevent: progress\ndata: 50\n\n")
 
     def test_a_carriage_return_cannot_start_a_field(self):
         # SSE ends a line at CR, LF or CRLF; user text with a lone CR must stay data.
         event = messages.Message(10, "public:news", "", "a\rid: 999\r\nb")
         expected = "id: 10\ndata: a\ndata: id: 999\ndata: b\n\n"
-        self.assertEqual(messages.format_event(event), expected)
+        self.assertEqual(messages.format_event(event, "10"), expected)
 
     def test_event_names_reject_line_breaks(self):
         with self.assertRaises(ValueError):
@@ -53,6 +53,26 @@ class FormatTest(SimpleTestCase):
     def test_payload_carries_id_and_topic(self):
         self.assertEqual(messages.parse_payload("12:room:3"), (12, "room:3"))
         self.assertIsNone(messages.parse_payload("ping"))
+
+    def test_a_signed_id_resumes_only_its_own_scope(self):
+        owner = messages.Owner.of(user="7", session="abc")
+        topics = ["public:news", "user:7"]
+        signed = messages.EventIds(owner, topics).sign(42)
+        self.assertEqual(messages.EventIds(owner, topics).unsign(signed), 42)
+        # The topic order of the query string does not matter.
+        self.assertEqual(messages.EventIds(owner, ["user:7", "public:news"]).unsign(signed), 42)
+        for other_owner, other_topics in [
+            (messages.Owner.of(user="8", session="abc"), topics),
+            (messages.Owner.of(user="7", session="new"), topics),
+            (messages.Owner(frozenset()), topics),
+            (owner, ["public:news"]),
+        ]:
+            self.assertIsNone(messages.EventIds(other_owner, other_topics).unsign(signed))
+
+    def test_an_unsigned_or_forged_id_resumes_nothing(self):
+        ids = messages.EventIds(messages.Owner(frozenset()), ["public:news"])
+        for value in ("", "42", "42:forged", ids.sign(42) + "0"):
+            self.assertIsNone(ids.unsign(value), value)
 
     def test_last_event_id_must_be_a_plain_number(self):
         self.assertEqual(messages.parse_last_event_id("42"), 42)
