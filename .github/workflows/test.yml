@@ -1,0 +1,188 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    # pre-commit pins its hook environments to 3.13 (default_language_version),
+    # and the linters only ever need one interpreter.
+    env:
+      MISE_PYTHON_VERSION: "3.13"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install: true
+          cache: true
+          # Distinct from the test jobs: this one also installs pre-commit, so
+          # sharing their key would hand them a cache missing a tool. The
+          # version belongs in the key too, or bumping it later restores a
+          # cache holding the old interpreter and never re-saves.
+          cache_key: "lint-{{default}}-{{env.MISE_PYTHON_VERSION}}"
+
+      - name: Cache pre-commit hooks
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: pre-commit-${{ runner.os }}-
+
+      - name: Cache uv downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-lint-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-lint-
+
+      # basedpyright resolves imports through .venv (see [tool.pyright] in
+      # pyproject.toml). Without this step it reports every import as missing.
+      # --locked, unlike `mise run bootstrap`: a uv.lock that has drifted from
+      # pyproject.toml should fail the job, not be silently re-resolved into
+      # something uv-audit then audits instead of the committed lock.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # uv-audit checks uv.lock against the published advisories, so a new one
+      # can turn an unrelated pull request red. That is deliberate: it is how we
+      # hear about it. Fix the lock rather than skipping the hook.
+      - name: Run pre-commit
+        run: mise run lint
+
+  build:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13", "3.14", "3.15"]
+
+    # Job-scoped so every step resolves the same interpreter, not just the
+    # install step.
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      MISE_PYTHON_VERSION: ${{ matrix.python-version }}
+      # pre-commit too, unlike the lint job: this one never runs it.
+      MISE_DISABLE_TOOLS: pre-commit
+
+    # The suite needs PostgreSQL: LISTEN/NOTIFY and advisory locks exist nowhere else.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install: true
+          cache: true
+          # The default key ignores MISE_PYTHON_VERSION, so every matrix job
+          # would share one entry holding a single Python.
+          cache_key: "{{default}}-{{env.MISE_PYTHON_VERSION}}"
+
+      - name: Cache uv downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-${{ matrix.python-version }}-
+
+      - name: Test with tox
+        run: mise run test-all
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    # The tox matrix runs pytest without --cov, so the fail_under floor in
+    # pyproject.toml would otherwise be a local convention nothing enforces.
+    # One interpreter is enough: the floor is about the suite, not the matrix.
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      MISE_PYTHON_VERSION: "3.13"
+      MISE_DISABLE_TOOLS: pre-commit
+
+    # The suite needs PostgreSQL: LISTEN/NOTIFY and advisory locks exist nowhere else.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install: true
+          cache: true
+          cache_key: "coverage-{{default}}-{{env.MISE_PYTHON_VERSION}}"
+
+      - name: Cache uv downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-coverage-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-coverage-
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run the suite with coverage
+        run: mise run test
+
+  zizmor:
+    name: Audit workflows (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # zizmor-action reads workflow definitions
+      security-events: write # upload SARIF results to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1

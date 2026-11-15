@@ -1,0 +1,42 @@
+[tools]
+# 3.13 is the active default; the rest are installed for the tox matrix.
+python = ["3.13", "3.12", "3.14", "3.15"]
+# Pinned because the CI mise cache key hashes this file, not resolved versions.
+uv = "0.13.6"
+# pre-commit 4.7 needs Python 3.11+, also for the hook environments it creates.
+pre-commit = "4.7.0"
+
+[env]
+# uv sync creates .venv itself; mise only has to activate it.
+_.python.venv = { path = ".venv", create = false }
+# Tell uv to use mise's Pythons via PATH instead of installing its own.
+UV_PYTHON_PREFERENCE = "only-system"
+
+[tasks.bootstrap]
+description = "Install dependencies into .venv"
+run = "uv sync"
+
+[tasks.upgrade]
+description = "Upgrade all dependencies"
+run = "uv sync --upgrade"
+
+[tasks.lint]
+description = "Run pre-commit on all files"
+run = "pre-commit run --all-files"
+
+[tasks.test]
+description = "Run pytest with coverage against PostgreSQL"
+# Dev mode surfaces ResourceWarning, such as an unclosed connection of the hub.
+env = { PYTHONDEVMODE = "1" }
+run = "uv run pytest --cov --cov-report=term"
+
+[tasks."test-all"]
+description = "Run the full Python/Django matrix via tox"
+run = "uvx --with tox-uv --with tox-gh-actions tox"
+
+[tasks.clean]
+description = "Remove caches, build artefacts, coverage"
+run = '''
+rm -rf htmlcov/ .coverage .coverage.* .pytest_cache/ .ruff_cache/ dist/ build/ .tox/ src/*.egg-info
+find . -type d -name __pycache__ -prune -exec rm -rf {} +
+'''
