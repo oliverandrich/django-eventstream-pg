@@ -139,11 +139,23 @@ jobs:
         "$REF_NAME" dist/**
         --repo "$REPO"
 
+  test:
+    name: Test
+    if: startsWith(github.ref, 'refs/tags/')
+    # A called workflow gets at most these; GitHub rejects the file if a job there asks for more.
+    permissions:
+      contents: read
+      actions: read # the zizmor job reads workflow definitions
+      security-events: write # the zizmor job uploads SARIF results
+    uses: ./.github/workflows/test.yml
+
   publish-to-testpypi:
     name: Publish Python 🐍 distribution 📦 to TestPyPI
     if: startsWith(github.ref, 'refs/tags/')  # only publish to TestPyPI on tag pushes
+    # PyPI follows TestPyPI, so a red suite stops both uploads.
     needs:
     - build
+    - test
     runs-on: ubuntu-latest
 
     environment:
