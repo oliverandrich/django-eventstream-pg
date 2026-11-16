@@ -1,6 +1,7 @@
 # django-pg-sse
 
-Documentation: <https://django-pg-sse.readthedocs.io/>, with a
+Documentation: <https://django-pg-sse.readthedocs.io/>, with the
+[settings](https://django-pg-sse.readthedocs.io/en/latest/settings.html), a
 [deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html) and an
 [API reference](https://django-pg-sse.readthedocs.io/en/latest/api.html).
 
@@ -192,11 +193,9 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - LISTEN needs a session. A PgBouncer in transaction mode cannot carry it.
   With such a PgBouncer, give the hub an alias that reaches PostgreSQL directly.
   The alias must reach the same database as `default`, which `broadcast()` writes to.
-- Over TCP, they use libpq keepalives: 30 seconds idle, then 3 probes 10 seconds apart.
-- On Linux, `tcp_user_timeout` ends a send or receive that the server leaves unacknowledged for 30 seconds.
-  `OPTIONS` overrides these socket options.
-- They give up connecting after 10 seconds.
-  `connect_timeout` in `OPTIONS`, `PGCONNECT_TIMEOUT` or a libpq service overrides that.
+- They add libpq defaults for `connect_timeout`, keepalives and `tcp_user_timeout`.
+  [Settings](https://django-pg-sse.readthedocs.io/en/latest/settings.html#databases) lists them;
+  a key in `OPTIONS` replaces its default.
 
 ## How it works
 

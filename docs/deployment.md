@@ -81,27 +81,8 @@ Add both when you set `max_connections`.
 
 ### Timeouts
 
-The hub's connections carry these libpq defaults.
-A key in `OPTIONS` replaces its default.
-
-```python
-DATABASES = {
-    "default": {
-        # ...
-        "OPTIONS": {
-            "connect_timeout": 10,  # give up connecting to an unreachable host
-            "keepalives": 1,  # probe an idle connection
-            "keepalives_idle": 30,
-            "keepalives_interval": 10,
-            "keepalives_count": 3,
-            "tcp_user_timeout": 30_000,  # milliseconds; Linux only
-        },
-    },
-}
-```
-
-With `PGCONNECT_TIMEOUT`, `PGSERVICE` or `OPTIONS["service"]`, the hub sets no `connect_timeout`.
-libpq then takes it from the environment or the service file.
+The hub's connections add libpq defaults for `connect_timeout`, keepalives and `tcp_user_timeout`.
+[Settings](settings.md#databases) lists them; a key in `OPTIONS` replaces its default.
 `PG_SSE["QUERY_TIMEOUT"]` (default 30 seconds) limits each query on the live connection and the stream pool.
 The `LISTEN` health check has its own limit of 10 seconds.
 Raise `QUERY_TIMEOUT` for a database that answers slowly under load.

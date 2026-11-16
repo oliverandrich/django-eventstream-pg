@@ -80,6 +80,7 @@ src/django_pg_sse/
 `docs/index.md` includes the README.
 `docs/changelog.md` includes CHANGELOG.md.
 `docs/api.md` lists the public API for autodoc; add a new public name there.
+`docs/settings.md` lists every `PG_SSE` key; `tests/test_docs.py` fails when one is missing.
 `mise run build-docs` builds with `-W`, as the CI job does.
 `mise run serve-docs` rebuilds on change.
 `tests/test_docs.py` fails when a module or an exported name lacks a docstring.
