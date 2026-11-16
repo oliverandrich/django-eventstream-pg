@@ -1,11 +1,13 @@
 """The SSE endpoint: one stream per page, for several topics."""
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 
 from asgiref.sync import sync_to_async
 from django.db import connection, transaction
 from django.db.models import Max
+from django.dispatch import Signal as DjangoSignal
 from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseForbidden, StreamingHttpResponse
 from django.http.response import HttpResponseBase
 from django.utils.cache import add_never_cache_headers
@@ -21,9 +23,11 @@ from django_pg_sse.messages import (
     EventIds,
     Owner,
     Signal,
+    digest,
     format_event,
 )
 from django_pg_sse.models import StreamEvent
+from django_pg_sse.signals import StreamInfo, stream_closed, stream_opened
 
 KEEPALIVE_SECONDS = 15
 
@@ -44,17 +48,19 @@ async def stream(request: HttpRequest) -> HttpResponseBase:
     authorized = await sync_to_async(_authorize)(request, topics, known)
     if authorized is None:
         return HttpResponseForbidden()
-    owner, authorized_at, ids = authorized
+    owner, authorized_at, ids, info = authorized
     # An unsigned or foreign id resumes nothing; the stream starts with live events.
     last_event_id = ids.unsign(request.headers.get("Last-Event-ID", ""))
-    messages = _messages(hub, topics, owner, authorized_at, ids, last_event_id)
+    messages = _messages(hub, owner, authorized_at, ids, last_event_id, info)
     response = StreamingHttpResponse(messages, content_type="text/event-stream")
     add_never_cache_headers(response)
     return response
 
 
-def _authorize(request: HttpRequest, topics: list[str], known: int | None) -> tuple[Owner, int, EventIds] | None:
-    """The stream's owner, the newest event id before the check and its id signer.
+def _authorize(
+    request: HttpRequest, topics: list[str], known: int | None
+) -> tuple[Owner, int, EventIds, StreamInfo] | None:
+    """The stream's owner, the newest event id before the check, its id signer and its signal info.
 
     None if a topic is not allowed.
 
@@ -67,23 +73,37 @@ def _authorize(request: HttpRequest, topics: list[str], known: int | None) -> tu
     if not all(can_subscribe(request, topic) for topic in topics):
         return None
     # Anonymous streams have no close topics: close_streams() needs a user or a session login.
+    user_pk = session = None
     if request.user.is_authenticated:
-        owner = Owner.of(user=str(request.user.pk), session=request.session.session_key)
+        user_pk, session_key = str(request.user.pk), request.session.session_key
+        owner = Owner.of(user=user_pk, session=session_key)
+        session = digest(session_key) if session_key is not None else None
         authorized_at = known or 0
     else:
         owner, authorized_at = Owner(()), 0
-    return owner, authorized_at, EventIds(owner, topics)
+    info = StreamInfo(id=uuid.uuid4().hex, user_pk=user_pk, session=session, topics=tuple(topics))
+    return owner, authorized_at, EventIds(owner, topics), info
 
 
-async def _messages(
-    hub: Hub, topics: list[str], owner: Owner, authorized_at: int, ids: EventIds, last_event_id: int | None
+async def _messages(  # noqa: PLR0913
+    hub: Hub,
+    owner: Owner,
+    authorized_at: int,
+    ids: EventIds,
+    last_event_id: int | None,
+    info: StreamInfo,
 ) -> AsyncIterator[str]:
     await sync_to_async(_close_connection)()
     # Subscribed here, not in the view: a generator that never starts skips its finally.
+    topics = list(info.topics)
     queue = hub.subscribe(topics, owner)
     sent = last_event_id or 0
+    opened = False
     try:
         await hub.ready.wait()
+        # Set first: a disconnect during the receivers must still send stream_closed.
+        opened = True
+        await _send(stream_opened, info)
         yield CONNECTED
         # A close among the events since authorisation reached the hub before this queue existed.
         missed = (hub.last_id or 0) > authorized_at
@@ -117,6 +137,19 @@ async def _messages(
             yield format_event(item, ids.sign(item.id))
     finally:
         hub.unsubscribe(queue)
+        # Only a stream that began stream_opened sends stream_closed, so the two come in pairs.
+        # shield: a second cancellation, such as at shutdown, must not cut the receivers short.
+        if opened:
+            await asyncio.shield(_send(stream_closed, info))
+
+
+async def _send(signal: DjangoSignal, info: StreamInfo) -> None:
+    if not signal.has_listeners(StreamInfo):
+        return
+    # asend_robust() logs a failing receiver to django.dispatch, and the stream goes on.
+    await signal.asend_robust(sender=StreamInfo, stream=info)
+    # A sync receiver ran in the request's thread and may have opened its connection again.
+    await sync_to_async(_close_connection)()
 
 
 async def _revoked_since(hub: Hub, owner: Owner, event_id: int) -> bool:

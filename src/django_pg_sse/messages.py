@@ -61,8 +61,12 @@ class Owner:
     def of(cls, *, user: str | None, session: str | None) -> "Owner":
         keys = {kind: key for kind, key in (("user", user), ("session", session)) if key is not None}
         # A digest keeps the session key out of the table and fits any primary key into the column.
-        topics = (f"{CLOSE_PREFIX}{kind}:{hashlib.sha256(key.encode()).hexdigest()}" for kind, key in keys.items())
+        topics = (f"{CLOSE_PREFIX}{kind}:{digest(key)}" for kind, key in keys.items())
         return cls(tuple(sorted(topics)))
+
+
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 class EventIds:

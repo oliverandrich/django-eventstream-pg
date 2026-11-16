@@ -1,6 +1,9 @@
 import asyncio
+import contextlib
 import functools
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+import hashlib
+import threading
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable
 from typing import Any
 from unittest import mock
 
@@ -14,7 +17,7 @@ from django.test import AsyncClient, RequestFactory, SimpleTestCase, Transaction
 from psycopg import sql
 
 from django_pg_sse import hub as hub_module
-from django_pg_sse import messages, permissions, publish, views
+from django_pg_sse import messages, permissions, publish, signals, views
 from django_pg_sse.models import StreamEvent
 
 type Stream = AsyncIterator[bytes]
@@ -467,6 +470,133 @@ class ReceiveTest(SimpleTestCase):
             await hub._receive(["1:public:news"])  # pyright: ignore[reportPrivateUsage]
         fetch.assert_awaited_once()
         self.assertEqual(hub.last_id, 1)
+
+
+class SignalsTest(StreamTestCase):
+    def record(self) -> list[tuple[str, Any]]:
+        received: list[tuple[str, Any]] = []
+        for name, signal in (("opened", signals.stream_opened), ("closed", signals.stream_closed)):
+
+            def receiver(sender: Any, stream: Any, name: str = name, **kwargs: Any) -> None:  # noqa: ARG001
+                received.append((name, stream))
+
+            signal.connect(receiver, weak=False)
+            self.addCleanup(signal.disconnect, receiver)
+        return received
+
+    async def logged_in_client(self, user: User) -> AsyncClient:
+        client = AsyncClient()
+        await client.aforce_login(user)
+        return client
+
+    @stops_the_hub
+    async def test_an_opened_stream_names_its_owner_and_topics(self):
+        received = self.record()
+        user = await User.objects.acreate_user("ada")
+        client = await self.logged_in_client(user)
+        await self.open_stream(f"user:{user.pk}", "public:news", client=client)
+        session_key = (await client.asession()).session_key
+        assert session_key is not None
+        ((name, stream),) = received
+        self.assertEqual(name, "opened")
+        self.assertRegex(stream.id, r"^[0-9a-f]{32}$")
+        self.assertEqual(stream.user_pk, str(user.pk))
+        self.assertEqual(stream.session, hashlib.sha256(session_key.encode()).hexdigest())
+        self.assertEqual(stream.topics, (f"user:{user.pk}", "public:news"))
+
+    @stops_the_hub
+    async def test_an_anonymous_stream_has_no_owner(self):
+        received = self.record()
+        await self.open_stream("public:news")
+        ((_, stream),) = received
+        self.assertEqual((stream.user_pk, stream.session), (None, None))
+
+    @stops_the_hub
+    async def test_a_disconnect_sends_stream_closed(self):
+        # Django cancels the response task when the client disconnects.
+        received = self.record()
+        stream = await self.open_stream("public:news")
+        waiting = asyncio.ensure_future(anext(stream))
+        await asyncio.sleep(0.1)
+        waiting.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await waiting
+        self.assertEqual([name for name, _ in received], ["opened", "closed"])
+        self.assertEqual(received[0][1], received[1][1])
+
+    @stops_the_hub
+    async def test_a_revoked_stream_sends_stream_closed(self):
+        received = self.record()
+        user = await User.objects.acreate_user("ada")
+        stream = await self.open_stream(f"user:{user.pk}", client=await self.logged_in_client(user))
+        await sync_to_async(publish.close_streams)(user=user)
+        self.assertEqual(await self.next_message(stream), messages.CLOSED)
+        with self.assertRaises(StopAsyncIteration):
+            await self.next_message(stream)
+        self.assertEqual([name for name, _ in received], ["opened", "closed"])
+
+    @stops_the_hub
+    async def test_a_failing_receiver_leaves_the_stream_running(self):
+        def fail(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            raise RuntimeError("receiver")
+
+        signals.stream_opened.connect(fail, weak=False)
+        self.addCleanup(signals.stream_opened.disconnect, fail)
+        # Signal.asend_robust() logs the failure once, to django.dispatch.
+        with self.assertLogs("django.dispatch", "ERROR"), self.assertNoLogs("django_pg_sse", "ERROR"):
+            stream = await self.open_stream("public:news")
+        await sync_to_async(publish.broadcast)("public:news", "<p>still</p>")
+        self.assertIn("<p>still</p>", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_a_disconnect_during_stream_opened_still_sends_stream_closed(self):
+        received = self.record()
+        started, release = threading.Event(), threading.Event()
+
+        def slow(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            started.set()
+            release.wait(5)
+
+        signals.stream_opened.connect(slow, weak=False)
+        self.addCleanup(signals.stream_opened.disconnect, slow)
+        stream = content_of(await AsyncClient().get("/events/?topic=public:news"))
+        waiting = asyncio.ensure_future(anext(stream))
+        self.assertTrue(await asyncio.to_thread(started.wait, 5))
+        waiting.cancel()
+        release.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await waiting
+        self.assertIn("closed", [name for name, _ in received])
+
+    @stops_the_hub
+    async def test_a_receiver_leaves_no_connection_to_the_stream(self):
+        # A sync receiver runs in the request's thread, whose connection the stream would keep.
+        def query(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            StreamEvent.objects.exists()
+
+        signals.stream_opened.connect(query, weak=False)
+        self.addCleanup(signals.stream_opened.disconnect, query)
+        calls: list[str] = []
+
+        def note(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            calls.append("receiver")
+
+        signals.stream_opened.connect(note, weak=False)
+        self.addCleanup(signals.stream_opened.disconnect, note)
+        with mock.patch.object(views, "_close_connection", side_effect=lambda: calls.append("close")):
+            await self.open_stream("public:news")
+        self.assertEqual(calls, ["close", "receiver", "close"])
+
+    async def test_a_refused_or_unread_stream_sends_nothing(self):
+        received = self.record()
+        refused = await AsyncClient().get("/events/?topic=room:1")
+        self.assertEqual(refused.status_code, 403)
+        unread = await AsyncClient().get("/events/?topic=public:news")
+        assert isinstance(unread, StreamingHttpResponse)
+        content = unread.streaming_content
+        assert isinstance(content, AsyncGenerator)
+        await content.aclose()
+        self.assertEqual(received, [])
 
 
 class CloseStreamsArgumentsTest(SimpleTestCase):

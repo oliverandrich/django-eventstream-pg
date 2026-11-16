@@ -16,6 +16,7 @@ src/django_pg_sse/
 ├── publish.py       # broadcast(), broadcast_json(), close_streams(), the user_logged_out receiver
 ├── hub.py           # one listener per event loop; fans events out to the loop's streams
 ├── views.py         # the SSE endpoint and its authorisation
+├── signals.py       # stream_opened, stream_closed and their StreamInfo
 ├── permissions.py   # the default can_subscribe() policy
 ├── conf.py          # the PG_SSE setting and its defaults
 ├── checks.py        # system check: the default database must be PostgreSQL
@@ -46,6 +47,10 @@ src/django_pg_sse/
   `server_side_binding`. It also drops Django's `cursor_factory` and `context`.
 - A stream sends event ids signed by `EventIds` for its owner's close topics and its topics.
   Replay needs a validly signed id and no close for the owner after that id.
+- `stream_opened` and `stream_closed` come in pairs: `_messages()` sends closed once opened began.
+  The closed send runs under `asyncio.shield`, so a second cancellation cannot cut it short.
+  Receivers run through `asend_robust()`, so a failing receiver is logged and the stream goes on.
+  `_send()` closes the request thread's connection again, which a sync receiver may have opened.
 - `__init__.py` must not import the model at module level. Django imports the package while it
   loads `INSTALLED_APPS`, before models can load.
 

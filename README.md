@@ -125,6 +125,31 @@ The events from the time without access then stay unread.
 Run `manage.py prune_stream_events` regularly, for example hourly; it deletes events older than
 `PG_SSE["RETENTION_HOURS"]` (default 24).
 
+## Signals
+
+`django_pg_sse.signals` sends `stream_opened` when a stream's subscription is in place.
+It sends `stream_closed` when that stream ends, also after a disconnect during `stream_opened`.
+A process that is killed sends no `stream_closed`, so presence built on it needs a timeout.
+Both signals pass `sender=StreamInfo` and a `stream` argument, a `StreamInfo` with these fields:
+
+- `id`: a new random id for each connection
+- `user_pk`: the user's primary key as a string, or `None` for an anonymous stream
+- `session`: the SHA-256 digest of the session key, or `None` for an anonymous stream
+- `topics`: the topics of the stream
+
+```python
+from django.dispatch import receiver
+from django_pg_sse.signals import stream_opened
+
+
+@receiver(stream_opened)
+def count_stream(sender, stream, **kwargs):
+    metrics.increment("sse.streams", tags={"user": stream.user_pk is not None})
+```
+
+The stream waits for its receivers, so keep them short.
+A receiver that raises is logged to `django.dispatch`, and the stream goes on.
+
 ## Database connections
 
 The hub's connections use `DATABASES["default"]`, outside Django's connection pool.
@@ -166,6 +191,7 @@ django-pg-sse supports PostgreSQL only and ASGI only. In return it needs no othe
 | Storage | Every event | Optional, per channel |
 | Event ids | One sequence, in commit order across all topics | One counter per channel |
 | `Last-Event-ID` | Signed for the user, the session and the topics | Chosen by the client |
+| Stream lifecycle | `stream_opened` and `stream_closed` signals | None |
 | Revoking access | `close_streams()` for a user or a session, in every process | `channel_permission_changed()` for a user and a channel, in the calling process and at a GRIP proxy |
 | Payload | HTML for htmx, JSON for client code, or any text | JSON by default, or any text |
 | Servers | ASGI | ASGI, or WSGI behind a GRIP proxy |
