@@ -15,6 +15,7 @@ from asgiref.sync import sync_to_async
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.sessions.backends.db import SessionStore
+from django.core.exceptions import SynchronousOnlyOperation
 from django.db import DEFAULT_DB_ALIAS, connection, connections, transaction
 from django.http import HttpRequest, HttpResponseBase, StreamingHttpResponse
 from django.test import AsyncClient, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings
@@ -577,6 +578,64 @@ class HubRobustnessTest(StreamTestCase):
                 self.assertEqual(await hub_connection.fetch(sql.SQL("SELECT 1"), []), [(1,)])
         finally:
             await hub.stop()
+
+
+class AsyncPublishTest(StreamTestCase):
+    @stops_the_hub
+    async def test_abroadcast_reaches_an_open_stream(self):
+        stream = await self.open_stream("public:news")
+        await publish.abroadcast("public:news", "<p>from async</p>")
+        self.assertIn("<p>from async</p>", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_abroadcast_json_sends_a_named_event(self):
+        stream = await self.open_stream("public:news")
+        await publish.abroadcast_json("public:news", {"online": 12}, event="presence")
+        self.assertIn('event: presence\ndata: {"online":12}', await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_aclose_streams_ends_the_streams_of_a_user(self):
+        user = await User.objects.acreate_user("ada")
+        client = AsyncClient()
+        await client.aforce_login(user)
+        stream = await self.open_stream(f"user:{user.pk}", client=client)
+        await publish.aclose_streams(user=user)
+        self.assertEqual(await self.next_message(stream), messages.CLOSED)
+
+    @stops_the_hub
+    async def test_aclose_streams_ends_the_streams_of_a_session(self):
+        user = await User.objects.acreate_user("ada")
+        client = AsyncClient()
+        await client.aforce_login(user)
+        stream = await self.open_stream(f"user:{user.pk}", client=client)
+        await publish.aclose_streams(session=await client.asession())
+        self.assertEqual(await self.next_message(stream), messages.CLOSED)
+
+    async def test_the_sync_functions_refuse_a_running_event_loop(self):
+        # A robust on_commit callback would only log the error, and the event would be lost.
+        user = await User.objects.acreate_user("ada")
+        for call in (
+            lambda: publish.broadcast("public:news", "x"),
+            lambda: publish.broadcast_json("public:news", {}, event="stats"),
+            lambda: publish.close_streams(user=user),
+        ):
+            with self.assertRaises(SynchronousOnlyOperation):
+                call()
+
+    async def test_closing_an_anonymous_user_is_refused(self):
+        with self.assertRaises(ValueError):
+            await publish.aclose_streams(user=AnonymousUser())  # pyright: ignore[reportArgumentType]
+
+    async def test_the_async_variants_check_their_arguments(self):
+        with self.assertRaises(ValueError):
+            await publish.abroadcast("_close:user:1", "x")
+        for event in ("closed", "hx:release", "a\nb"):
+            with self.assertRaises(ValueError, msg=event):
+                await publish.abroadcast("public:news", "x", event=event)
+        with self.assertRaises(ValueError):
+            await publish.abroadcast_json("public:news", {}, event="")
+        with self.assertRaises(ValueError):
+            await publish.aclose_streams()
 
 
 class SignalsTest(StreamTestCase):

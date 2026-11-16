@@ -57,6 +57,21 @@ A page opens one stream for all its topics:
 htmx swaps each message. Elements with `hx-swap-oob` or `<hx-partial>` update the page anywhere.
 Give list items stable ids, so an event delivered twice replaces its element instead of adding one.
 
+### From async code
+
+`broadcast()`, `broadcast_json()` and `close_streams()` register with `transaction.on_commit()`.
+Django allows that only in sync code; async code gets `SynchronousOnlyOperation`.
+Async code awaits `abroadcast()`, `abroadcast_json()` and `aclose_streams()` instead.
+
+```python
+from django_pg_sse import abroadcast
+
+
+async def post_message(request, room_pk):
+    message = await Message.objects.acreate(room_id=room_pk, text=request.POST["text"])
+    await abroadcast(f"room:{room_pk}", render_to_string("chat.html#message", {"message": message}))
+```
+
 ### JSON for client code
 
 `broadcast_json()` sends a value as JSON, encoded with `DjangoJSONEncoder`. It needs an event name.

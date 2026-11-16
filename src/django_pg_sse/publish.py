@@ -5,11 +5,13 @@ import functools
 import json
 from typing import Any
 
+from asgiref.sync import sync_to_async
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.sessions.backends.base import SessionBase
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import connection, transaction
 from django.http import HttpRequest
+from django.utils.asyncio import async_unsafe
 
 from django_pg_sse.messages import CHANNEL, LINE_BREAK, RESERVED_EVENTS, RESERVED_PREFIX, Owner
 from django_pg_sse.models import StreamEvent
@@ -19,6 +21,9 @@ from django_pg_sse.models import StreamEvent
 PUBLISH_LOCK_KEY = int.from_bytes(b"sse-emit", signed=True)
 
 
+# async_unsafe: from a running event loop, the robust on_commit callback could only log the
+# failure, and the event would be lost; the a* variants below serve async code.
+@async_unsafe
 def broadcast(topic: str, data: str, event: str = "") -> None:
     """Send `data` to every stream subscribed to `topic`, once the current transaction commits.
 
@@ -34,6 +39,7 @@ def broadcast(topic: str, data: str, event: str = "") -> None:
     _broadcast(topic, data, event)
 
 
+@async_unsafe
 def broadcast_json(topic: str, value: Any, *, event: str) -> None:
     """Send `value` as JSON in an event named `event`, like broadcast().
 
@@ -86,6 +92,7 @@ def _publish_sql() -> str:
     """
 
 
+@async_unsafe
 def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase | None = None) -> None:
     """End the open streams of `user` or of one session, once the current transaction commits.
 
@@ -94,6 +101,9 @@ def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase 
     """
     if user is None and session is None:
         raise ValueError("close_streams() needs a user or a session.")
+    # An anonymous user has no pk, so its close topic would name no stream.
+    if user is not None and user.pk is None:
+        raise ValueError("close_streams() needs a saved user, not an anonymous one.")
     # A session without a key was never saved, so no stream was opened with it.
     owner = Owner.of(
         user=str(user.pk) if user is not None else None,
@@ -101,6 +111,22 @@ def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase 
     )
     for topic in owner.close_topics:
         _broadcast(topic, "")
+
+
+# The sync functions use the database connection, so they run in Django's sync thread.
+async def abroadcast(topic: str, data: str, event: str = "") -> None:
+    """broadcast() for async code."""
+    await sync_to_async(broadcast)(topic, data, event)
+
+
+async def abroadcast_json(topic: str, value: Any, *, event: str) -> None:
+    """broadcast_json() for async code."""
+    await sync_to_async(broadcast_json)(topic, value, event=event)
+
+
+async def aclose_streams(*, user: AbstractBaseUser | None = None, session: SessionBase | None = None) -> None:
+    """close_streams() for async code."""
+    await sync_to_async(close_streams)(user=user, session=session)
 
 
 # Signals pass sender by keyword, so it keeps its name although the receiver ignores it.

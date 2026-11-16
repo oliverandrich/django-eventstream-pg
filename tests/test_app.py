@@ -57,3 +57,6 @@ class PublicApiTest(SimpleTestCase):
         self.assertIs(django_pg_sse.broadcast, publish.broadcast)
         self.assertIs(django_pg_sse.close_streams, publish.close_streams)
         self.assertIs(django_pg_sse.broadcast_json, publish.broadcast_json)
+        self.assertIs(django_pg_sse.abroadcast, publish.abroadcast)
+        self.assertIs(django_pg_sse.abroadcast_json, publish.abroadcast_json)
+        self.assertIs(django_pg_sse.aclose_streams, publish.aclose_streams)

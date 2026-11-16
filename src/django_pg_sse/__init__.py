@@ -3,9 +3,16 @@
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from django_pg_sse.publish import broadcast, broadcast_json, close_streams
+    from django_pg_sse.publish import (
+        abroadcast,
+        abroadcast_json,
+        aclose_streams,
+        broadcast,
+        broadcast_json,
+        close_streams,
+    )
 
-__all__ = ["broadcast", "broadcast_json", "close_streams"]
+__all__ = ["abroadcast", "abroadcast_json", "aclose_streams", "broadcast", "broadcast_json", "close_streams"]
 
 
 def __getattr__(name: str) -> Any:
