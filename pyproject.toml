@@ -70,6 +70,8 @@ reportPrivateUsage = "warning"
 # strict leaves this at "none", so suppressions outlive the upstream bug they
 # were added for. Fail instead, and they get removed when they stop applying.
 reportUnnecessaryTypeIgnoreComment = "error"
+# strict leaves this at "none" too, so deprecated APIs and overloads pass unnoticed.
+reportDeprecated = "error"
 
 # Ruff
 [tool.ruff]
