@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import psycopg
@@ -95,7 +95,7 @@ class _Pool:
         self.closed = False
 
     @contextlib.asynccontextmanager
-    async def connection(self) -> AsyncIterator[Connection]:
+    async def connection(self) -> AsyncGenerator[Connection, None]:
         async with (await self._open()).connection() as conn:
             yield conn
 
