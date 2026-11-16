@@ -172,6 +172,10 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - The number of connections per ASGI worker does not grow with the number of open streams.
   Open streams hold no connection from Django's pool.
 - A listener that loses its connection reconnects and loads the events it missed from the table.
+- A listener quiet for 30 seconds checks its connection with `SELECT 1` and reconnects without an answer.
+  This catches a half-open connection, such as after a failover, within about a minute.
+- Over TCP, the hub's connections use libpq keepalives unless `OPTIONS` sets them.
+- A query on a connection that a database restart ended runs once more on a new connection.
 - The view opts out of `ATOMIC_REQUESTS`, which Django does not allow for async views.
 - `close_streams()` stores an event on a close topic of the user or the session.
   Only a process with a stream of that owner acts on it, and it needs no query.

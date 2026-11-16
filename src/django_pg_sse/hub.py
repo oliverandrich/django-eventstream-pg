@@ -22,6 +22,12 @@ QUEUE_SIZE = 1000
 # A longer replay ends the stream after one batch; htmx reconnects and asks for the next.
 REPLAY_BATCH = 500
 RECONNECT_DELAYS = (0.5, 1, 2, 5)
+# A LISTEN connection quiet this long must answer SELECT 1 within HEALTH_TIMEOUT, or it is replaced.
+# A half-open TCP connection would otherwise wait for events that never come.
+HEALTH_SECONDS = 30
+HEALTH_TIMEOUT = 10
+# libpq TCP keepalives, unless OPTIONS sets them. They also keep NAT entries alive.
+KEEPALIVES = {"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3}
 
 type Queue = asyncio.Queue[Message | Signal]
 
@@ -32,7 +38,7 @@ def connect_params() -> dict[str, Any]:
     # Django's sync cursor factory and adapter context do not fit an AsyncConnection.
     params.pop("cursor_factory", None)
     params.pop("context", None)
-    return params
+    return {**KEEPALIVES, **params}
 
 
 type Connection = psycopg.AsyncConnection[tuple[Any, ...]]
@@ -59,11 +65,20 @@ class _Connection:
 
     async def fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
         async with self.lock:
-            # closed is also true for a broken connection.
-            if self.connection is None or self.connection.closed:
-                self.connection = await _connect()
-            cursor = await self.connection.execute(query, params)
-            return await cursor.fetchall()
+            conn = await self._open()
+            try:
+                return await _fetch(conn, query, params)
+            except psycopg.OperationalError:
+                if not conn.closed:
+                    raise
+            # A restarted server ends the connection; one new connection retries the query.
+            return await _fetch(await self._open(), query, params)
+
+    async def _open(self) -> Connection:
+        # closed is also true for a broken connection.
+        if self.connection is None or self.connection.closed:
+            self.connection = await _connect()
+        return self.connection
 
     async def close(self) -> None:
         connection, self.connection = self.connection, None
@@ -106,8 +121,15 @@ class _Pool:
 
     async def fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
         async with self.connection() as conn:
-            cursor = await conn.execute(query, params)
-            return await cursor.fetchall()
+            try:
+                return await _fetch(conn, query, params)
+            except psycopg.OperationalError:
+                if not conn.closed:
+                    raise
+        # A restarted server ends every pooled connection; check() drops the closed idle ones.
+        await (await self._open()).check()
+        async with self.connection() as conn:
+            return await _fetch(conn, query, params)
 
     async def close(self) -> None:
         self.closed = True
@@ -161,6 +183,10 @@ class Hub:
         """Up to REPLAY_BATCH events of `topics` after `after_id`, oldest first."""
         return await _replay(self.streams, topics, after_id)
 
+    async def _newest(self) -> int:
+        rows = await self.live.fetch(sql.SQL("SELECT coalesce(max(id), 0) FROM {}").format(_table()), [])
+        return rows[0][0]
+
     async def any_since(self, topics: list[str], after_id: int) -> bool:
         """Whether one of `topics` has an event after `after_id`."""
         query = _select("WHERE topic = ANY(%s) AND id > %s LIMIT 1")
@@ -185,13 +211,19 @@ class Hub:
         while True:
             try:
                 async with await _connect() as listening:
+                    if self.last_id is None:
+                        # Read before LISTEN: a later commit arrives by NOTIFY or in the catch-up.
+                        self.last_id = await self._newest()
                     await listening.execute(sql.SQL("LISTEN {}").format(sql.Identifier(CHANNEL)))
                     await self._catch_up()
                     self.ready.set()
                     delays = RECONNECT_DELAYS
                     while True:
+                        notifies = listening.notifies(timeout=HEALTH_SECONDS, stop_after=1)
+                        if not (payloads := [notify.payload async for notify in notifies]):
+                            await _check(listening)
+                            continue
                         # One query then loads the events of every NOTIFY received so far.
-                        payloads = [notify.payload async for notify in listening.notifies(stop_after=1)]
                         payloads += [notify.payload async for notify in listening.notifies(timeout=0)]
                         await self._receive(payloads)
             except psycopg.Error:
@@ -229,18 +261,17 @@ class Hub:
             self.last_id = max(self.last_id or 0, max(event_id for event_id, _ in events))
 
     async def _catch_up(self) -> None:
-        # LISTEN is active now, so events committed while it was not are in the table.
-        if self.last_id is None:
-            query = sql.SQL("SELECT coalesce(max(id), 0) FROM {}").format(_table())
-            rows = await self.live.fetch(query, [])
-            self.last_id = rows[0][0]
-            return
-        while True:
-            messages = await _replay(self.live, list(self.queues), self.last_id)
+        # LISTEN is active now, so events committed while it was not are in the table up to newest.
+        newest = await self._newest()
+        while self.queues and (after := self.last_id or 0) < newest:
+            messages = await _replay(self.live, list(self.queues), after, newest)
             for message in messages:
                 self._deliver(message)
             if len(messages) < REPLAY_BATCH:
-                return
+                break
+        # Ids of unread topics count too: a stream subscribing now sees last_id beyond them,
+        # so it looks for closes it missed.
+        self.last_id = max(self.last_id or 0, newest)
 
     def _deliver(self, message: Message) -> None:
         # Ids become visible in order, so an id at or below last_id was delivered before.
@@ -266,10 +297,25 @@ class Hub:
         queue.put_nowait(signal)
 
 
-async def _replay(connection: _Connection | _Pool, topics: list[str], after_id: int) -> list[Message]:
-    query = _select("WHERE topic = ANY(%s) AND id > %s ORDER BY id LIMIT %s")
-    rows = await connection.fetch(query, [topics, after_id, REPLAY_BATCH])
+async def _replay(
+    connection: _Connection | _Pool, topics: list[str], after_id: int, up_to: int | None = None
+) -> list[Message]:
+    query = _select("WHERE topic = ANY(%s) AND id > %s AND (%s::bigint IS NULL OR id <= %s) ORDER BY id LIMIT %s")
+    rows = await connection.fetch(query, [topics, after_id, up_to, up_to, REPLAY_BATCH])
     return [Message(*row) for row in rows]
+
+
+async def _fetch(conn: Connection, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
+    cursor = await conn.execute(query, params)
+    return await cursor.fetchall()
+
+
+async def _check(listening: Connection) -> None:
+    try:
+        async with asyncio.timeout(HEALTH_TIMEOUT):
+            await listening.execute("SELECT 1")
+    except TimeoutError as error:
+        raise psycopg.OperationalError("The LISTEN connection did not answer SELECT 1.") from error
 
 
 def _table() -> sql.Identifier:

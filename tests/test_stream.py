@@ -2,11 +2,15 @@ import asyncio
 import contextlib
 import functools
 import hashlib
+import os
+import signal
+import subprocess
 import threading
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable
 from typing import Any
 from unittest import mock
 
+import psycopg
 from asgiref.sync import sync_to_async
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.models import AnonymousUser, User
@@ -472,16 +476,119 @@ class ReceiveTest(SimpleTestCase):
         self.assertEqual(hub.last_id, 1)
 
 
+def backend_pid_of_listener() -> int:
+    # Read before the first health check, which replaces LISTEN as the backend's last query.
+    query = "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'LISTEN %%'"
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        ((pid,),) = cursor.fetchall()
+        return pid
+
+
+def is_local_postgres(pid: int) -> bool:
+    # The pid comes from the server; only a local server in the same pid namespace owns it here.
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True, check=False)
+    return "postgres" in result.stdout
+
+
+def terminate_backend(pid: int) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_terminate_backend(%s)", [pid])
+
+
+class HubRobustnessTest(StreamTestCase):
+    @stops_the_hub
+    async def test_a_silent_listen_connection_is_replaced(self):
+        # SIGSTOP keeps the TCP connection open but silent, as a half-open connection after a failover.
+        with mock.patch.multiple(hub_module, HEALTH_SECONDS=1, HEALTH_TIMEOUT=0.5):
+            stream = await self.open_stream("public:news")
+            pid = await sync_to_async(backend_pid_of_listener)()
+            if not await asyncio.to_thread(is_local_postgres, pid):
+                self.skipTest("The PostgreSQL server is not a local process.")
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except (PermissionError, ProcessLookupError):
+                self.skipTest("The PostgreSQL backend cannot be stopped from here.")
+            try:
+                with self.assertLogs(hub_module.logger, "WARNING"):
+                    await sync_to_async(publish.broadcast)("public:news", "<p>after</p>")
+                    self.assertIn("<p>after</p>", await self.next_message(stream, timeout=10))
+            finally:
+                os.kill(pid, signal.SIGCONT)
+
+    async def test_catch_up_advances_past_topics_nobody_reads(self):
+        # A stream that subscribes during the catch-up then sees the ids it missed and checks for closes.
+        await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        unread = await StreamEvent.objects.acreate(topic="_close:user:x", data="")
+        hub = hub_module.Hub()
+        hub.last_id = unread.id - 1
+        try:
+            await hub._catch_up()  # pyright: ignore[reportPrivateUsage]
+        finally:
+            await hub.stop()
+        self.assertEqual(hub.last_id, unread.id)
+
+    @stops_the_hub
+    async def test_a_starting_listener_delivers_what_commits_after_its_start(self):
+        await StreamEvent.objects.acreate(topic="public:news", data="<p>before start</p>")
+        hub = hub_module.get_hub()
+        fetch = hub.live.fetch
+        reads: list[int] = []
+
+        async def commit_an_event_first(query: Any, params: list[Any]) -> list[tuple[Any, ...]]:
+            # Each read of the newest id races with a broadcast that commits just before it.
+            if "max(id)" in str(query):
+                reads.append(len(reads))
+                await sync_to_async(publish.broadcast)("public:news", f"<p>read {len(reads)}</p>")
+            return await fetch(query, params)
+
+        with mock.patch.object(hub.live, "fetch", commit_an_event_first):
+            stream = await self.open_stream("public:news")
+            # The first read sets the start; what commits after it, before LISTEN or not, arrives.
+            self.assertIn("<p>read 2</p>", await self.next_message(stream))
+
+    @override_settings(PG_SSE={"STREAM_CONNECTIONS": 3})
+    async def test_a_pool_whose_connections_all_ended_recovers(self):
+        hub = hub_module.Hub()
+        try:
+            async with hub.streams.connection() as a, hub.streams.connection() as b, hub.streams.connection() as c:
+                pids = [conn.info.backend_pid for conn in (a, b, c)]
+            for pid in pids:
+                await sync_to_async(terminate_backend)(pid)
+            self.assertEqual(await hub.streams.fetch(sql.SQL("SELECT 1"), []), [(1,)])
+        finally:
+            await hub.stop()
+
+    async def test_a_failed_connect_is_not_retried(self):
+        hub_connection = hub_module._Connection()  # pyright: ignore[reportPrivateUsage]
+        refused = psycopg.OperationalError("refused")
+        with mock.patch.object(hub_module, "_connect", side_effect=refused) as connect:
+            with self.assertRaises(psycopg.OperationalError):
+                await hub_connection.fetch(sql.SQL("SELECT 1"), [])
+        connect.assert_called_once()
+
+    async def test_a_terminated_connection_is_replaced(self):
+        # A database restart ends every backend; the next query must not fail with it.
+        hub = hub_module.Hub()
+        try:
+            for hub_connection in (hub.live, hub.streams):
+                ((pid,),) = await hub_connection.fetch(sql.SQL("SELECT pg_backend_pid()"), [])
+                await sync_to_async(terminate_backend)(pid)
+                self.assertEqual(await hub_connection.fetch(sql.SQL("SELECT 1"), []), [(1,)])
+        finally:
+            await hub.stop()
+
+
 class SignalsTest(StreamTestCase):
     def record(self) -> list[tuple[str, Any]]:
         received: list[tuple[str, Any]] = []
-        for name, signal in (("opened", signals.stream_opened), ("closed", signals.stream_closed)):
+        for name, stream_signal in (("opened", signals.stream_opened), ("closed", signals.stream_closed)):
 
             def receiver(sender: Any, stream: Any, name: str = name, **kwargs: Any) -> None:  # noqa: ARG001
                 received.append((name, stream))
 
-            signal.connect(receiver, weak=False)
-            self.addCleanup(signal.disconnect, receiver)
+            stream_signal.connect(receiver, weak=False)
+            self.addCleanup(stream_signal.disconnect, receiver)
         return received
 
     async def logged_in_client(self, user: User) -> AsyncClient:

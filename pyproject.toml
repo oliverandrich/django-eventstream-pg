@@ -28,7 +28,8 @@ dependencies = [
   "django>=5.2",
   # AsyncConnection.notifies() and the connection pool need psycopg 3.
   # The pool extra runs the queries of opening streams in parallel.
-  "psycopg[pool]>=3.2",
+  # 3.3.9 bounds the wait after a cancelled query, which the LISTEN health check relies on.
+  "psycopg[pool]>=3.3.9",
 ]
 
 [project.urls]

@@ -26,6 +26,15 @@ src/django_pg_sse/
 
 ## Invariants
 
+- `Hub._listen()` reads the newest id before `LISTEN` on first start, so no commit falls between.
+  `_catch_up()` replays up to the newest id and then sets `last_id` to it, read topics or not.
+  A stream subscribing meanwhile then sees `last_id` past `authorized_at` and checks for closes.
+- A LISTEN connection quiet for `HEALTH_SECONDS` must answer `SELECT 1` within `HEALTH_TIMEOUT`.
+  Otherwise `_listen()` treats it as lost and reconnects.
+  psycopg then waits up to 10 seconds more for the cancelled query before the connection closes.
+- `_Connection.fetch()` and `_Pool.fetch()` retry once when an `OperationalError` closed the connection.
+  `_Pool.fetch()` first runs `check()`, which drops every closed idle connection of the pool.
+  A failed connect and other errors, such as SQL errors, are not retried.
 - `broadcast()` writes after the commit, in a short transaction holding an advisory lock.
   Event ids therefore become visible in order. Replay after `Last-Event-ID` depends on it.
 - `_publish()` runs one statement: it takes the lock, stores the event and sends the NOTIFY.
