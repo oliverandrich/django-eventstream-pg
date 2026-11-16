@@ -27,7 +27,8 @@ dependencies = [
   # The oldest Django release with security support.
   "django>=5.2",
   # AsyncConnection.notifies() and the connection pool need psycopg 3.
-  "psycopg>=3.2",
+  # The pool extra runs the queries of opening streams in parallel.
+  "psycopg[pool]>=3.2",
 ]
 
 [project.urls]

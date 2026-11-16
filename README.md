@@ -105,6 +105,9 @@ Run `manage.py prune_stream_events` regularly, for example hourly; it deletes ev
 ## Database connections
 
 The hub's connections use `DATABASES["default"]`, outside Django's connection pool.
+Each ASGI worker holds one for LISTEN, one for live delivery and a pool for opening streams.
+`EVENTSTREAM_PG["STREAM_CONNECTIONS"]` (default 4) caps that pool.
+A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 
 - They take its host, port, user, password and the libpq `OPTIONS`, such as `sslmode`, `service`,
   `passfile`, `application_name` and `prepare_threshold`.
@@ -118,9 +121,8 @@ The hub's connections use `DATABASES["default"]`, outside Django's connection po
 - `broadcast()` writes the event after the commit, in a short transaction that holds an advisory
   lock. Event ids therefore become visible in order, which keeps the replay exact.
 - `NOTIFY` carries only the id and the topic, so the 8000-byte payload limit does not apply.
-- Each ASGI worker holds up to three connections outside Django's pool, however many streams are open.
-  They serve LISTEN, live delivery and the queries of opening streams.
-  Open streams hold no pooled connection.
+- The number of connections per ASGI worker does not grow with the number of open streams.
+  Open streams hold no connection from Django's pool.
 - A listener that loses its connection reconnects and loads the events it missed from the table.
 - The view opts out of `ATOMIC_REQUESTS`, which Django does not allow for async views.
 - `close_streams()` stores an event on a close topic of the user or the session.

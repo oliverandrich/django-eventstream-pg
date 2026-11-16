@@ -150,12 +150,32 @@ class StreamTest(StreamTestCase):
             await sync_to_async(publish.broadcast)("public:news", "<p>first</p>")
             self.assertIn("<p>first</p>", await self.next_message(stream, timeout=10))
 
+    # One pooled connection, held below, so live delivery through the pool would block.
+    @override_settings(EVENTSTREAM_PG={"STREAM_CONNECTIONS": 1})
     @stops_the_hub
     async def test_a_running_replay_leaves_live_delivery_free(self):
         stream = await self.open_stream("public:news")
-        async with hub_module.get_hub().streams.lock:
+        async with hub_module.get_hub().streams.connection():
             await sync_to_async(publish.broadcast)("public:news", "<p>live</p>")
             self.assertIn("<p>live</p>", await self.next_message(stream))
+
+    @override_settings(EVENTSTREAM_PG={"STREAM_CONNECTIONS": 2})
+    async def test_opening_streams_query_in_parallel(self):
+        hub = hub_module.Hub()
+        try:
+            async with hub.streams.connection():
+                self.assertFalse(await asyncio.wait_for(hub.any_since(["public:news"], 0), 2))
+        finally:
+            await hub.stop()
+
+    async def test_a_stopped_hub_opens_no_new_pool(self):
+        # A stream may outlive Hub.stop(), as at loop shutdown.
+        hub = hub_module.Hub()
+        await hub.streams.fetch(sql.SQL("SELECT 1"), [])
+        await hub.stop()
+        with self.assertRaises(RuntimeError):
+            await hub.streams.fetch(sql.SQL("SELECT 1"), [])
+        self.assertIsNone(hub.streams.pool)
 
     async def test_a_closed_connection_reconnects(self):
         # A stream may outlive Hub.stop(), as at loop shutdown.
@@ -462,10 +482,11 @@ class HubConnectionOptionsTest(TransactionTestCase):
         hub = hub_module.Hub()
         try:
             with mock.patch.dict(connection.settings_dict, OPTIONS=options):
-                rows = await hub.live.fetch(sql.SQL("SELECT current_setting('application_name')"), [])
+                query = sql.SQL("SELECT current_setting('application_name')")
+                rows = [await hub.live.fetch(query, []), await hub.streams.fetch(query, [])]
         finally:
             await hub.stop()
-        self.assertEqual(rows, [("eventstream-pg-test",)])
+        self.assertEqual(rows, [[("eventstream-pg-test",)]] * 2)
 
     async def test_hub_connections_take_the_configured_role(self):
         await sync_to_async(self.run_sql)("DROP ROLE IF EXISTS {}")
@@ -475,7 +496,8 @@ class HubConnectionOptionsTest(TransactionTestCase):
         hub = hub_module.Hub()
         try:
             with mock.patch.dict(connection.settings_dict, OPTIONS=options):
-                rows = await hub.live.fetch(sql.SQL("SELECT current_user"), [])
+                query = sql.SQL("SELECT current_user")
+                rows = [await hub.live.fetch(query, []), await hub.streams.fetch(query, [])]
         finally:
             await hub.stop()
-        self.assertEqual(rows, [(ROLE,)])
+        self.assertEqual(rows, [[(ROLE,)]] * 2)

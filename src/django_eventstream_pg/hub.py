@@ -4,12 +4,15 @@ import asyncio
 import contextlib
 import logging
 import weakref
+from collections.abc import AsyncIterator
 from typing import Any
 
 import psycopg
 from django.db import connection
 from psycopg import sql
+from psycopg_pool import AsyncConnectionPool
 
+from django_eventstream_pg import conf
 from django_eventstream_pg.messages import CHANNEL, CLOSE_PREFIX, Message, Owner, Signal, parse_payload
 from django_eventstream_pg.models import StreamEvent
 
@@ -32,19 +35,26 @@ def connect_params() -> dict[str, Any]:
     return params
 
 
-async def _connect() -> psycopg.AsyncConnection[tuple[Any, ...]]:
+type Connection = psycopg.AsyncConnection[tuple[Any, ...]]
+
+
+async def _connect() -> Connection:
     conn = await psycopg.AsyncConnection.connect(**connect_params(), autocommit=True)
+    await _assume_role(conn)
+    return conn
+
+
+async def _assume_role(conn: Connection) -> None:
     # get_connection_params() leaves assume_role to Django's own connection setup.
     if role := connection.settings_dict["OPTIONS"].get("assume_role"):
         await conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
-    return conn
 
 
 class _Connection:
     """A connection outside Django's pool for one query at a time. It reconnects when broken."""
 
     def __init__(self) -> None:
-        self.connection: psycopg.AsyncConnection[tuple[Any, ...]] | None = None
+        self.connection: Connection | None = None
         self.lock = asyncio.Lock()
 
     async def fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
@@ -61,13 +71,58 @@ class _Connection:
             await connection.close()
 
 
+class _Pool:
+    """Up to STREAM_CONNECTIONS connections outside Django's pool, opened on first use."""
+
+    def __init__(self) -> None:
+        self.pool: AsyncConnectionPool[Connection] | None = None
+        self.lock = asyncio.Lock()
+        self.closed = False
+
+    @contextlib.asynccontextmanager
+    async def connection(self) -> AsyncIterator[Connection]:
+        async with (await self._open()).connection() as conn:
+            yield conn
+
+    async def _open(self) -> AsyncConnectionPool[Connection]:
+        if (pool := self.pool) is not None:
+            return pool
+        async with self.lock:
+            # A stream may outlive Hub.stop(); a new pool would stay open with nothing to close it.
+            if self.closed:
+                raise RuntimeError("The hub has stopped.")
+            if (pool := self.pool) is None:
+                pool = AsyncConnectionPool[Connection](
+                    kwargs={**connect_params(), "autocommit": True},
+                    min_size=1,
+                    max_size=conf.get("STREAM_CONNECTIONS"),
+                    configure=_assume_role,
+                    name="eventstream_pg.streams",
+                    open=False,
+                )
+                await pool.open()
+                self.pool = pool
+            return pool
+
+    async def fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
+        async with self.connection() as conn:
+            cursor = await conn.execute(query, params)
+            return await cursor.fetchall()
+
+    async def close(self) -> None:
+        self.closed = True
+        pool, self.pool = self.pool, None
+        if pool is not None:
+            await pool.close()
+
+
 class Hub:
     """Fans NOTIFY out to the open streams of one event loop, which is one ASGI worker.
 
-    It holds up to three connections of its own, outside Django's pool.
+    It holds connections of its own, outside Django's pool.
     The listener's connection waits on LISTEN.
     `live` loads the events the hub delivers.
-    `streams` runs the queries of opening streams.
+    `streams` pools up to STREAM_CONNECTIONS connections for the queries of opening streams.
     An open stream therefore holds no pooled connection.
     """
 
@@ -79,8 +134,8 @@ class Hub:
         self.last_id: int | None = None
         self.task: asyncio.Task[None] | None = None
         self.live = _Connection()
-        # Replays wait for each other here, not for live delivery.
-        self.streams = _Connection()
+        # Replays run in parallel here, apart from live delivery.
+        self.streams = _Pool()
 
     def subscribe(self, topics: list[str], owner: Owner) -> Queue:
         """A queue that receives the events of `topics` and the closes of `owner`.
@@ -211,7 +266,7 @@ class Hub:
         queue.put_nowait(signal)
 
 
-async def _replay(connection: _Connection, topics: list[str], after_id: int) -> list[Message]:
+async def _replay(connection: _Connection | _Pool, topics: list[str], after_id: int) -> list[Message]:
     query = _select("WHERE topic = ANY(%s) AND id > %s ORDER BY id LIMIT %s")
     rows = await connection.fetch(query, [topics, after_id, REPLAY_BATCH])
     return [Message(*row) for row in rows]

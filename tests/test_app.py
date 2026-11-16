@@ -35,6 +35,13 @@ class CheckTest(SimpleTestCase):
             errors = checks.check_postgresql(None)
         self.assertEqual([error.id for error in errors], ["eventstream_pg.E001"])
 
+    def test_stream_connections_must_be_a_positive_integer(self):
+        for value in (0, -1, "4"):
+            with override_settings(EVENTSTREAM_PG={"STREAM_CONNECTIONS": value}):
+                errors = checks.check_stream_connections(None)
+            self.assertEqual([error.id for error in errors], ["eventstream_pg.E002"], value)
+        self.assertEqual(checks.check_stream_connections(None), [])
+
 
 class MigrationsTest(TestCase):
     def test_models_and_migrations_agree(self):

@@ -5,6 +5,8 @@ from django.apps import AppConfig
 from django.core.checks import CheckMessage, Error
 from django.db import connections
 
+from django_eventstream_pg import conf
+
 
 # Django passes both arguments by keyword, so they keep their names although the check ignores them.
 def check_postgresql(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
@@ -16,5 +18,18 @@ def check_postgresql(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> 
         Error(
             f"django-eventstream-pg needs PostgreSQL, but the default database is {vendor}.",
             id="eventstream_pg.E001",
+        )
+    ]
+
+
+def check_stream_connections(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
+    value = conf.get("STREAM_CONNECTIONS")
+    # bool is an int subclass, and True would mean one connection by accident.
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return []
+    return [
+        Error(
+            f'EVENTSTREAM_PG["STREAM_CONNECTIONS"] must be a positive integer, not {value!r}.',
+            id="eventstream_pg.E002",
         )
     ]

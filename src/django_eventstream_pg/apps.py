@@ -9,9 +9,10 @@ class EventStreamPgConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self) -> None:
-        from django_eventstream_pg.checks import check_postgresql
+        from django_eventstream_pg.checks import check_postgresql, check_stream_connections
 
         checks.register(check_postgresql)
+        checks.register(check_stream_connections)
         if apps.is_installed("django.contrib.auth"):
             from django.contrib.auth.signals import user_logged_out
 

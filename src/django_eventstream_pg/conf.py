@@ -12,6 +12,8 @@ DEFAULTS: dict[str, Any] = {
     "CAN_SUBSCRIBE": "django_eventstream_pg.permissions.can_subscribe",
     # How long prune_stream_events keeps events, which is how far back Last-Event-ID reaches.
     "RETENTION_HOURS": 24,
+    # Connections per ASGI worker for the replay and revocation queries of opening streams.
+    "STREAM_CONNECTIONS": 4,
 }
 
 
