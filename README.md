@@ -46,16 +46,19 @@ nothing. A topic has at most 200 characters and an event name at most 100; `broa
 ```python
 from django_pg_sse import broadcast
 
-html = '<ul id="messages" hx-swap-oob="beforeend"><li id="message-7">Hi</li></ul>'
-broadcast(f"room:{room.pk}", html)
+html = '<ul id="news" hx-swap-oob="beforeend"><li id="news-7">Hi</li></ul>'
+broadcast("public:news", html)
 ```
 
 A page opens one stream for all its topics:
 
 ```html
-<ul id="messages"></ul>
-<div hx-sse:connect="{% url 'pg_sse:stream' %}?topic=room:{{ room.pk }}&topic=user:{{ request.user.pk }}"></div>
+<ul id="news"></ul>
+<div hx-sse:connect="{% url 'pg_sse:stream' %}?topic=public:news{% if user.is_authenticated %}&topic=user:{{ user.pk }}{% endif %}"></div>
 ```
+
+The default policy opens `public:` topics to everyone and `user:<pk>` to that user.
+Other kinds, such as `room:`, need a policy of their own; see [Who may read a topic](#who-may-read-a-topic).
 
 htmx swaps each message. Elements with `hx-swap-oob` or `<hx-partial>` update the page anywhere.
 Give list items stable ids, so an event delivered twice replaces its element instead of adding one.
