@@ -116,8 +116,11 @@ class Hub:
                     await self._catch_up()
                     self.ready.set()
                     delays = RECONNECT_DELAYS
-                    async for notify in listening.notifies():
-                        await self._receive(notify.payload)
+                    while True:
+                        # One query then loads the events of every NOTIFY received so far.
+                        payloads = [notify.payload async for notify in listening.notifies(stop_after=1)]
+                        payloads += [notify.payload async for notify in listening.notifies(timeout=0)]
+                        await self._receive(payloads)
             except psycopg.Error:
                 logger.warning("The SSE listener lost its connection; reconnecting.", exc_info=True)
             except Exception:
@@ -127,22 +130,30 @@ class Hub:
             await asyncio.sleep(delays[0])
             delays = delays[1:] or delays
 
-    async def _receive(self, payload: str) -> None:
-        parsed = parse_payload(payload)
-        if parsed is None:
-            logger.warning("Ignored a NOTIFY on %s with the payload %r.", CHANNEL, payload)
-            return
-        event_id, topic = parsed
-        if topic not in self.queues:
-            # No stream here reads the topic; ids still advance for the catch-up after a reconnect.
-            self.last_id = max(self.last_id or 0, event_id)
-            return
-        if topic.startswith(CLOSE_PREFIX):
-            # A close carries nothing beyond its topic, which the payload names.
-            self._deliver(Message(event_id, topic, "", ""))
-            return
-        for row in await self._fetch(_select("WHERE id = %s"), [event_id]):
-            self._deliver(Message(*row))
+    async def _receive(self, payloads: list[str]) -> None:
+        events: list[tuple[int, str]] = []
+        for payload in payloads:
+            if (parsed := parse_payload(payload)) is None:
+                logger.warning("Ignored a NOTIFY on %s with the payload %r.", CHANNEL, payload)
+            else:
+                events.append(parsed)
+        # A close carries nothing beyond its topic, which the payload names.
+        loaded = {
+            event_id: Message(event_id, topic, "", "") for event_id, topic in events if topic.startswith(CLOSE_PREFIX)
+        }
+        requested = set(loaded)
+        # A stream may subscribe while a query runs, so each query is followed by another check.
+        while wanted := [event_id for event_id, topic in events if topic in self.queues and event_id not in requested]:
+            requested.update(wanted)
+            rows = await self._fetch(_select("WHERE id = ANY(%s)"), [wanted])
+            loaded |= {row[0]: Message(*row) for row in rows}
+        # No await from here on, so the subscriptions stay as checked.
+        for event_id in sorted(loaded):
+            self._deliver(loaded[event_id])
+        # Unread ids advance only now, so _deliver skips none of the read ones before them.
+        # They still count for the catch-up after a reconnect.
+        if events:
+            self.last_id = max(self.last_id or 0, max(event_id for event_id, _ in events))
 
     async def _catch_up(self) -> None:
         # LISTEN is active now, so events committed while it was not are in the table.

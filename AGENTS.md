@@ -32,6 +32,9 @@ src/django_eventstream_pg/
 - `close_streams()` stores an event on each close topic of the owner, `_close:<kind>:<sha256>`.
   The hub indexes close topics like any topic, so a listener that reconnects still applies them.
 - The digest keeps the session key out of the table and fits any primary key into the column.
+- `Hub._listen()` passes every NOTIFY already received to `_receive()` at once.
+  `_receive()` loads their events with `id = ANY`, again for streams that subscribed meanwhile.
+  It delivers without an await in between and advances `last_id` only afterwards.
 - An open stream holds no connection from Django's pool. The hub uses two connections of its own.
   `views._messages()` closes the request thread's connection after the response middleware.
 - The hub's connections bypass Django's connection setup, so `_connect()` applies `assume_role`.

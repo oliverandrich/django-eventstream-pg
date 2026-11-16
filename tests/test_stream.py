@@ -140,11 +140,11 @@ class StreamTest(StreamTestCase):
         receive = hub._receive  # pyright: ignore[reportPrivateUsage]
         failed: list[str] = []
 
-        async def fail_once(payload: str) -> None:
+        async def fail_once(payloads: list[str]) -> None:
             if not failed:
-                failed.append(payload)
-                raise RuntimeError(payload)
-            await receive(payload)
+                failed.extend(payloads)
+                raise RuntimeError(payloads)
+            await receive(payloads)
 
         with mock.patch.object(hub, "_receive", fail_once), self.assertLogs(hub_module.logger, "ERROR"):
             await sync_to_async(publish.broadcast)("public:news", "<p>first</p>")
@@ -358,7 +358,7 @@ class CloseStreamsTest(StreamTestCase):
         owner = messages.Owner.of(user="7", session=None)
         with mock.patch.object(hub, "_listen", mock.AsyncMock()), mock.patch.object(hub, "_fetch") as fetch:
             queue = hub.subscribe(["public:news"], owner)
-            await hub._receive(messages.notify_payload(5, owner.close_topics[0]))  # pyright: ignore[reportPrivateUsage]
+            await hub._receive([messages.notify_payload(5, owner.close_topics[0])])  # pyright: ignore[reportPrivateUsage]
         fetch.assert_not_called()
         self.assertIs(queue.get_nowait(), messages.Signal.REVOKED)
 
@@ -369,9 +369,56 @@ class CloseStreamsTest(StreamTestCase):
         hub = hub_module.Hub()
         with mock.patch.object(hub, "_listen", mock.AsyncMock()), mock.patch.object(hub, "_fetch") as fetch:
             hub.subscribe(["public:news"], messages.Owner.of(user=str(ada.pk), session=None))
-            await hub._receive(messages.notify_payload(close.id, close.topic))  # pyright: ignore[reportPrivateUsage]
+            await hub._receive([messages.notify_payload(close.id, close.topic)])  # pyright: ignore[reportPrivateUsage]
         fetch.assert_not_called()
         self.assertEqual(hub.last_id, close.id)
+
+
+class ReceiveTest(SimpleTestCase):
+    async def test_pending_notifies_load_in_one_query(self):
+        hub = hub_module.Hub()
+        with mock.patch.object(hub, "_listen", mock.AsyncMock()):
+            queue = hub.subscribe(["public:news"], messages.Owner(()))
+        one, three = messages.Message(1, "public:news", "", "one"), messages.Message(3, "public:news", "", "three")
+        rows = [(one.id, one.topic, one.event, one.html), (three.id, three.topic, three.event, three.html)]
+        with mock.patch.object(hub, "_fetch", mock.AsyncMock(return_value=rows)) as fetch:
+            # The unread id 2 lies between the two; last_id must not pass 3 before it is delivered.
+            await hub._receive(["1:public:news", "2:public:other", "3:public:news"])  # pyright: ignore[reportPrivateUsage]
+        fetch.assert_awaited_once_with(mock.ANY, [[1, 3]])
+        self.assertEqual([queue.get_nowait(), queue.get_nowait()], [one, three])
+        self.assertEqual(hub.last_id, 3)
+
+    async def test_a_stream_subscribed_during_the_query_gets_its_events(self):
+        hub = hub_module.Hub()
+        owner = messages.Owner.of(user="7", session=None)
+        close_topic = owner.close_topics[0]
+        with mock.patch.object(hub, "_listen", mock.AsyncMock()):
+            hub.subscribe(["public:news"], messages.Owner(()))
+        late: list[hub_module.Queue] = []
+        rows = {1: (1, "public:news", "", "one"), 3: (3, "public:other", "", "three")}
+
+        async def fetch(query: object, params: list[list[int]]) -> list[tuple[object, ...]]:  # noqa: ARG001
+            if not late:
+                with mock.patch.object(hub, "_listen", mock.AsyncMock()):
+                    late.append(hub.subscribe(["public:other"], owner))
+            return [rows[event_id] for event_id in params[0]]
+
+        with mock.patch.object(hub, "_fetch", fetch):
+            payloads = ["1:public:news", f"2:{close_topic}", "3:public:other"]
+            await hub._receive(payloads)  # pyright: ignore[reportPrivateUsage]
+        # The close ends the late queue, so event 3 never reaches it.
+        self.assertEqual([late[0].get_nowait()], [messages.Signal.REVOKED])
+        self.assertEqual(hub.last_id, 3)
+
+    async def test_a_missing_row_ends_the_loading(self):
+        # prune_stream_events may delete an event between its NOTIFY and the query.
+        hub = hub_module.Hub()
+        with mock.patch.object(hub, "_listen", mock.AsyncMock()):
+            hub.subscribe(["public:news"], messages.Owner(()))
+        with mock.patch.object(hub, "_fetch", mock.AsyncMock(return_value=[])) as fetch:
+            await hub._receive(["1:public:news"])  # pyright: ignore[reportPrivateUsage]
+        fetch.assert_awaited_once()
+        self.assertEqual(hub.last_id, 1)
 
 
 class CloseStreamsArgumentsTest(SimpleTestCase):
