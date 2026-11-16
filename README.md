@@ -83,8 +83,9 @@ Without htmx, `EventSource.addEventListener("presence", ...)` receives the same 
 
 `PG_SSE["CAN_SUBSCRIBE"]` names a function `(request, topic) -> bool`. The default opens
 `public:` topics to everyone and `user:<pk>` to that user, and closes every other kind.
-Topics starting with `_` belong to the package. The view refuses them before the check runs,
-and `broadcast()` raises `ValueError` for them.
+Topics starting with `_` are reserved for the package, such as the topics `close_streams()` writes to.
+The view answers a request for them with a 403, before it calls `CAN_SUBSCRIBE`.
+`broadcast()` raises `ValueError` for them.
 
 ```python
 PG_SSE = {"CAN_SUBSCRIBE": "myproject.events.can_subscribe"}
