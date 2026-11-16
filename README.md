@@ -84,7 +84,7 @@ The check runs when a stream opens. After taking access away, call `close_stream
 ```python
 from django_eventstream_pg import close_streams
 
-close_streams(user=user)              # every stream of the user
+close_streams(user=user)  # every stream of the user
 close_streams(session=request.session)  # the streams of one session
 ```
 
