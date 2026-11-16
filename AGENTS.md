@@ -36,7 +36,7 @@ src/django_pg_sse/
   `_fetch()` and `pool.check()` run within `PG_SSE["QUERY_TIMEOUT"]`; `_check()` within `HEALTH_TIMEOUT`.
   psycopg closes a connection whose server does not answer the cancel, so the retry below applies.
 - `connect_params()` sets keepalives and `tcp_user_timeout` unless `OPTIONS` sets them.
-  It sets `connect_timeout` only without `PGCONNECT_TIMEOUT` and without a libpq `service`.
+  It sets `connect_timeout` only without `PGCONNECT_TIMEOUT`, `PGSERVICE` and `OPTIONS["service"]`.
 - `_Connection.fetch()` and `_Pool.fetch()` retry once when an `OperationalError` closed the connection.
   `_Pool.fetch()` first runs `check()`, which drops every closed idle connection of the pool.
   A failed connect and other errors, such as SQL errors, are not retried.

@@ -749,6 +749,8 @@ class HubRobustnessTest(StreamTestCase):
         # A default kwarg would override PGCONNECT_TIMEOUT and a service file's connect_timeout.
         with mock.patch.dict(os.environ, PGCONNECT_TIMEOUT="30"):
             self.assertNotIn("connect_timeout", hub_module.connect_params())
+        with mock.patch.dict(os.environ, PGSERVICE="pg_sse"):
+            self.assertNotIn("connect_timeout", hub_module.connect_params())
         options = {**connection.settings_dict["OPTIONS"], "service": "pg_sse"}
         with mock.patch.dict(connection.settings_dict, OPTIONS=options):
             self.assertNotIn("connect_timeout", hub_module.connect_params())

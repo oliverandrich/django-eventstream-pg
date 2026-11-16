@@ -51,7 +51,7 @@ def connect_params() -> dict[str, Any]:
     params.pop("context", None)
     defaults: dict[str, Any] = dict(SOCKET_OPTIONS)
     # A kwarg would override PGCONNECT_TIMEOUT and a service file's connect_timeout.
-    if "PGCONNECT_TIMEOUT" not in os.environ and "service" not in params:
+    if not {"PGCONNECT_TIMEOUT", "PGSERVICE"} & os.environ.keys() and "service" not in params:
         defaults["connect_timeout"] = CONNECT_TIMEOUT
     return {**defaults, **params}
 
