@@ -1,4 +1,4 @@
-# django-eventstream-pg
+# django-pg-sse
 
 Server-sent events for Django over PostgreSQL `LISTEN`/`NOTIFY`. Push HTML from any process to the
 open browsers of a topic, with replay after a reconnect. No Redis, no message broker.
@@ -15,13 +15,13 @@ Built for [htmx 4](https://four.htmx.org) and its `hx-sse` extension, but any SS
 ## Installation
 
 ```shell
-uv add django-eventstream-pg
+uv add django-pg-sse
 ```
 
 ```python
 INSTALLED_APPS = [
     # ...
-    "django_eventstream_pg",
+    "django_pg_sse",
 ]
 ```
 
@@ -29,7 +29,7 @@ INSTALLED_APPS = [
 # urls.py
 urlpatterns = [
     # ...
-    path("events/", include("django_eventstream_pg.urls")),
+    path("events/", include("django_pg_sse.urls")),
 ]
 ```
 
@@ -41,7 +41,7 @@ Send HTML to a topic. The event goes out when the current transaction commits; a
 nothing.
 
 ```python
-from django_eventstream_pg import broadcast
+from django_pg_sse import broadcast
 
 html = '<ul id="messages" hx-swap-oob="beforeend"><li id="message-7">Hi</li></ul>'
 broadcast(f"room:{room.pk}", html)
@@ -51,7 +51,7 @@ A page opens one stream for all its topics:
 
 ```html
 <ul id="messages"></ul>
-<div hx-sse:connect="{% url 'eventstream_pg:stream' %}?topic=room:{{ room.pk }}&topic=user:{{ request.user.pk }}"></div>
+<div hx-sse:connect="{% url 'pg_sse:stream' %}?topic=room:{{ room.pk }}&topic=user:{{ request.user.pk }}"></div>
 ```
 
 htmx swaps each message. Elements with `hx-swap-oob` or `<hx-partial>` update the page anywhere.
@@ -59,17 +59,17 @@ Give list items stable ids, so an event delivered twice replaces its element ins
 
 ## Who may read a topic
 
-`EVENTSTREAM_PG["CAN_SUBSCRIBE"]` names a function `(request, topic) -> bool`. The default opens
+`PG_SSE["CAN_SUBSCRIBE"]` names a function `(request, topic) -> bool`. The default opens
 `public:` topics to everyone and `user:<pk>` to that user, and closes every other kind.
 Topics starting with `_` belong to the package. The view refuses them before the check runs,
 and `broadcast()` raises `ValueError` for them.
 
 ```python
-EVENTSTREAM_PG = {"CAN_SUBSCRIBE": "myproject.events.can_subscribe"}
+PG_SSE = {"CAN_SUBSCRIBE": "myproject.events.can_subscribe"}
 ```
 
 ```python
-from django_eventstream_pg.permissions import can_subscribe as default
+from django_pg_sse.permissions import can_subscribe as default
 
 
 def can_subscribe(request, topic):
@@ -82,7 +82,7 @@ def can_subscribe(request, topic):
 The check runs when a stream opens. After taking access away, call `close_streams()`:
 
 ```python
-from django_eventstream_pg import close_streams
+from django_pg_sse import close_streams
 
 close_streams(user=user)  # every stream of the user
 close_streams(session=request.session)  # the streams of one session
@@ -100,13 +100,13 @@ An unsigned id, or one signed for another stream, replays nothing; the stream st
 A `close_streams()` for the owner after the id also skips the replay.
 The events from the time without access then stay unread.
 Run `manage.py prune_stream_events` regularly, for example hourly; it deletes events older than
-`EVENTSTREAM_PG["RETENTION_HOURS"]` (default 24).
+`PG_SSE["RETENTION_HOURS"]` (default 24).
 
 ## Database connections
 
 The hub's connections use `DATABASES["default"]`, outside Django's connection pool.
 Each ASGI worker holds one for LISTEN, one for live delivery and a pool for opening streams.
-`EVENTSTREAM_PG["STREAM_CONNECTIONS"]` (default 4) caps that pool.
+`PG_SSE["STREAM_CONNECTIONS"]` (default 4) caps that pool.
 A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 
 - They take its host, port, user, password and the libpq `OPTIONS`, such as `sslmode`, `service`,

@@ -1,8 +1,8 @@
 from django.urls import path
 
-from django_eventstream_pg import views
+from django_pg_sse import views
 
-app_name = "eventstream_pg"
+app_name = "pg_sse"
 
 urlpatterns = [
     path("", views.stream, name="stream"),

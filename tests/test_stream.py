@@ -13,9 +13,9 @@ from django.http import HttpRequest, HttpResponseBase, StreamingHttpResponse
 from django.test import AsyncClient, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings
 from psycopg import sql
 
-from django_eventstream_pg import hub as hub_module
-from django_eventstream_pg import messages, permissions, publish, views
-from django_eventstream_pg.models import StreamEvent
+from django_pg_sse import hub as hub_module
+from django_pg_sse import messages, permissions, publish, views
+from django_pg_sse.models import StreamEvent
 
 type Stream = AsyncIterator[bytes]
 
@@ -118,7 +118,7 @@ class StreamTest(StreamTestCase):
             response = await AsyncClient().get("/events/")
         self.assertEqual(response.status_code, 400)
 
-    @override_settings(EVENTSTREAM_PG={"CAN_SUBSCRIBE": "tests.test_stream.allow_every_topic"})
+    @override_settings(PG_SSE={"CAN_SUBSCRIBE": "tests.test_stream.allow_every_topic"})
     async def test_refuses_reserved_topics_whatever_can_subscribe_allows(self):
         for topic in ("_close", "_close:user:1", "_presence"):
             response = await AsyncClient().get(f"/events/?topic=public:news&topic={topic}")
@@ -151,7 +151,7 @@ class StreamTest(StreamTestCase):
             self.assertIn("<p>first</p>", await self.next_message(stream, timeout=10))
 
     # One pooled connection, held below, so live delivery through the pool would block.
-    @override_settings(EVENTSTREAM_PG={"STREAM_CONNECTIONS": 1})
+    @override_settings(PG_SSE={"STREAM_CONNECTIONS": 1})
     @stops_the_hub
     async def test_a_running_replay_leaves_live_delivery_free(self):
         stream = await self.open_stream("public:news")
@@ -159,7 +159,7 @@ class StreamTest(StreamTestCase):
             await sync_to_async(publish.broadcast)("public:news", "<p>live</p>")
             self.assertIn("<p>live</p>", await self.next_message(stream))
 
-    @override_settings(EVENTSTREAM_PG={"STREAM_CONNECTIONS": 2})
+    @override_settings(PG_SSE={"STREAM_CONNECTIONS": 2})
     async def test_opening_streams_query_in_parallel(self):
         hub = hub_module.Hub()
         try:
@@ -469,7 +469,7 @@ class CloseStreamsArgumentsTest(SimpleTestCase):
         publish.close_streams(session=SessionStore())
 
 
-ROLE = "eventstream_pg_test_role"
+ROLE = "django_pg_sse_test_role"
 
 
 class HubConnectionOptionsTest(TransactionTestCase):
@@ -478,7 +478,7 @@ class HubConnectionOptionsTest(TransactionTestCase):
             cursor.execute(sql.SQL(statement).format(sql.Identifier(ROLE)))  # pyright: ignore[reportArgumentType]
 
     async def test_hub_connections_take_the_libpq_options(self):
-        options = {**connection.settings_dict["OPTIONS"], "application_name": "eventstream-pg-test"}
+        options = {**connection.settings_dict["OPTIONS"], "application_name": "pg-sse-test"}
         hub = hub_module.Hub()
         try:
             with mock.patch.dict(connection.settings_dict, OPTIONS=options):
@@ -486,7 +486,7 @@ class HubConnectionOptionsTest(TransactionTestCase):
                 rows = [await hub.live.fetch(query, []), await hub.streams.fetch(query, [])]
         finally:
             await hub.stop()
-        self.assertEqual(rows, [[("eventstream-pg-test",)]] * 2)
+        self.assertEqual(rows, [[("pg-sse-test",)]] * 2)
 
     async def test_hub_connections_take_the_configured_role(self):
         await sync_to_async(self.run_sql)("DROP ROLE IF EXISTS {}")

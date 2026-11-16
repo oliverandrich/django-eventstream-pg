@@ -5,7 +5,7 @@ from django.apps import AppConfig
 from django.core.checks import CheckMessage, Error
 from django.db import connections
 
-from django_eventstream_pg import conf
+from django_pg_sse import conf
 
 
 # Django passes both arguments by keyword, so they keep their names although the check ignores them.
@@ -16,8 +16,8 @@ def check_postgresql(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> 
         return []
     return [
         Error(
-            f"django-eventstream-pg needs PostgreSQL, but the default database is {vendor}.",
-            id="eventstream_pg.E001",
+            f"django-pg-sse needs PostgreSQL, but the default database is {vendor}.",
+            id="pg_sse.E001",
         )
     ]
 
@@ -29,7 +29,7 @@ def check_stream_connections(app_configs: Sequence[AppConfig] | None, **kwargs: 
         return []
     return [
         Error(
-            f'EVENTSTREAM_PG["STREAM_CONNECTIONS"] must be a positive integer, not {value!r}.',
-            id="eventstream_pg.E002",
+            f'PG_SSE["STREAM_CONNECTIONS"] must be a positive integer, not {value!r}.',
+            id="pg_sse.E002",
         )
     ]

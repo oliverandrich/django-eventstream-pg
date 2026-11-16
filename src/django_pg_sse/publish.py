@@ -9,8 +9,8 @@ from django.contrib.sessions.backends.base import SessionBase
 from django.db import connection, transaction
 from django.http import HttpRequest
 
-from django_eventstream_pg.messages import CHANNEL, LINE_BREAK, RESERVED_PREFIX, Owner
-from django_eventstream_pg.models import StreamEvent
+from django_pg_sse.messages import CHANNEL, LINE_BREAK, RESERVED_PREFIX, Owner
+from django_pg_sse.models import StreamEvent
 
 # Serialises event writers, so ids become visible in the order they are assigned.
 # Replay after Last-Event-ID would skip an event whose smaller id committed late.

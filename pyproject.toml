@@ -1,5 +1,5 @@
 [project]
-name = "django-eventstream-pg"
+name = "django-pg-sse"
 description = "Server-sent events for Django over PostgreSQL LISTEN/NOTIFY, with replay after reconnects."
 authors = [{ name = "Oliver Andrich", email = "oliver@andrich.me" }]
 readme = "README.md"
@@ -32,8 +32,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/oliverandrich/django-eventstream-pg"
-Changelog = "https://github.com/oliverandrich/django-eventstream-pg/blob/main/CHANGELOG.md"
+Repository = "https://github.com/oliverandrich/django-pg-sse"
+Changelog = "https://github.com/oliverandrich/django-pg-sse/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -101,7 +101,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["django_eventstream_pg"]
+known-first-party = ["django_pg_sse"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

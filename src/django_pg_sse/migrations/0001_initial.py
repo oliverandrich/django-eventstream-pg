@@ -21,7 +21,7 @@ class Migration(migrations.Migration):
                 ('created', models.DateTimeField(auto_now_add=True, db_index=True)),
             ],
             options={
-                'indexes': [models.Index(fields=['topic', 'id'], name='eventstream_pg_topic_id')],
+                'indexes': [models.Index(fields=['topic', 'id'], name='django_pg_sse_topic_id')],
             },
         ),
     ]

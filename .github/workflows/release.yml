@@ -11,8 +11,8 @@ permissions:
 
 env:
   # Change these for your project's URLs
-  PYPI_URL: https://pypi.org/p/django-eventstream-pg
-  PYPI_TEST_URL: https://test.pypi.org/p/django-eventstream-pg
+  PYPI_URL: https://pypi.org/p/django-pg-sse
+  PYPI_TEST_URL: https://test.pypi.org/p/django-pg-sse
 
 jobs:
 

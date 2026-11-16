@@ -12,9 +12,9 @@ from django.db import connection
 from psycopg import sql
 from psycopg_pool import AsyncConnectionPool
 
-from django_eventstream_pg import conf
-from django_eventstream_pg.messages import CHANNEL, CLOSE_PREFIX, Message, Owner, Signal, parse_payload
-from django_eventstream_pg.models import StreamEvent
+from django_pg_sse import conf
+from django_pg_sse.messages import CHANNEL, CLOSE_PREFIX, Message, Owner, Signal, parse_payload
+from django_pg_sse.models import StreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class _Pool:
                     min_size=1,
                     max_size=conf.get("STREAM_CONNECTIONS"),
                     configure=_assume_role,
-                    name="eventstream_pg.streams",
+                    name="pg_sse.streams",
                     open=False,
                 )
                 await pool.open()

@@ -5,19 +5,19 @@ Guidance for coding agents and contributors. Development setup and commit conven
 
 ## What this project is
 
-`django-eventstream-pg` pushes server-sent events from Django to browsers over PostgreSQL
+`django-pg-sse` pushes server-sent events from Django to browsers over PostgreSQL
 `LISTEN`/`NOTIFY`. It stores every event, so a reconnecting client replays what it missed.
 
 ## Package layout
 
 ```
-src/django_eventstream_pg/
+src/django_pg_sse/
 ├── messages.py      # SSE format, NOTIFY payloads, Message, Owner, Signal; no Django imports
 ├── publish.py       # broadcast(), close_streams(), the user_logged_out receiver
 ├── hub.py           # one listener per event loop; fans events out to the loop's streams
 ├── views.py         # the SSE endpoint and its authorisation
 ├── permissions.py   # the default can_subscribe() policy
-├── conf.py          # the EVENTSTREAM_PG setting and its defaults
+├── conf.py          # the PG_SSE setting and its defaults
 ├── checks.py        # system check: the default database must be PostgreSQL
 ├── models.py        # StreamEvent, the stored events
 └── management/commands/prune_stream_events.py

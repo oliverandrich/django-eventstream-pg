@@ -16,7 +16,7 @@ class StreamEvent(models.Model):
     created: models.DateTimeField[datetime, datetime] = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        indexes = [models.Index(fields=["topic", "id"], name="eventstream_pg_topic_id")]
+        indexes = [models.Index(fields=["topic", "id"], name="django_pg_sse_topic_id")]
 
     def __str__(self) -> str:
         return f"{self.topic} #{self.id}"

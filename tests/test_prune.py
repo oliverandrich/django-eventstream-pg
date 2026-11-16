@@ -5,7 +5,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from django_eventstream_pg.models import StreamEvent
+from django_pg_sse.models import StreamEvent
 
 
 def make_event(*, age: timedelta) -> StreamEvent:
@@ -15,7 +15,7 @@ def make_event(*, age: timedelta) -> StreamEvent:
 
 
 class PruneStreamEventsTest(TestCase):
-    @override_settings(EVENTSTREAM_PG={"RETENTION_HOURS": 24})
+    @override_settings(PG_SSE={"RETENTION_HOURS": 24})
     def test_deletes_events_older_than_the_retention(self):
         old = make_event(age=timedelta(hours=25))
         recent = make_event(age=timedelta(hours=1))

@@ -146,7 +146,7 @@ wheels = [
 ]
 
 [[package]]
-name = "django-eventstream-pg"
+name = "django-pg-sse"
 source = { editable = "." }
 dependencies = [
     { name = "django" },

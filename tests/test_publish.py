@@ -9,9 +9,9 @@ from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from psycopg import sql
 
-from django_eventstream_pg import hub as hub_module
-from django_eventstream_pg import messages, publish
-from django_eventstream_pg.models import StreamEvent
+from django_pg_sse import hub as hub_module
+from django_pg_sse import messages, publish
+from django_pg_sse.models import StreamEvent
 
 
 def listener() -> psycopg.Connection[tuple[Any, ...]]:

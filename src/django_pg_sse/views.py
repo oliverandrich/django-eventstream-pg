@@ -10,10 +10,10 @@ from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseForbidd
 from django.http.response import HttpResponseBase
 from django.utils.cache import add_never_cache_headers
 
-from django_eventstream_pg import conf
-from django_eventstream_pg import hub as hub_module
-from django_eventstream_pg.hub import Hub, get_hub
-from django_eventstream_pg.messages import (
+from django_pg_sse import conf
+from django_pg_sse import hub as hub_module
+from django_pg_sse.hub import Hub, get_hub
+from django_pg_sse.messages import (
     CLOSED,
     CONNECTED,
     KEEPALIVE,
@@ -23,7 +23,7 @@ from django_eventstream_pg.messages import (
     Signal,
     format_event,
 )
-from django_eventstream_pg.models import StreamEvent
+from django_pg_sse.models import StreamEvent
 
 KEEPALIVE_SECONDS = 15
 

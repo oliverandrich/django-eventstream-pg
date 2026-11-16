@@ -9,7 +9,7 @@ INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
-    "django_eventstream_pg",
+    "django_pg_sse",
 ]
 
 MIDDLEWARE = [
@@ -23,7 +23,7 @@ ROOT_URLCONF = "tests.urls"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("POSTGRES_DB", "eventstream_pg"),
+        "NAME": os.environ.get("POSTGRES_DB", "django_pg_sse"),
         "USER": os.environ.get("POSTGRES_USER", ""),
         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
         "HOST": os.environ.get("POSTGRES_HOST", ""),

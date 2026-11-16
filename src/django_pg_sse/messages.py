@@ -10,7 +10,7 @@ from functools import cached_property, lru_cache
 from django.core import signing
 
 # The PostgreSQL channel that carries "<id>:<topic>" for every stored event.
-CHANNEL = "eventstream_pg"
+CHANNEL = "pg_sse"
 # Topics with this prefix belong to the package. The view refuses them before CAN_SUBSCRIBE runs.
 RESERVED_PREFIX = "_"
 # close_streams() stores an event on each close topic of the owner, so it replays like any event.
@@ -69,7 +69,7 @@ class EventIds:
     """
 
     def __init__(self, owner: Owner, topics: list[str]) -> None:
-        self.salt = "django_eventstream_pg.ids:" + json.dumps([owner.close_topics, sorted(set(topics))])
+        self.salt = "django_pg_sse.ids:" + json.dumps([owner.close_topics, sorted(set(topics))])
         self.signer = signing.Signer(salt=self.salt)
 
     def sign(self, event_id: int) -> str:

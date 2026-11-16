@@ -11,7 +11,7 @@ for dependencies. The tests need a running PostgreSQL server.
 ```shell
 mise trust
 mise run bootstrap   # install dependencies into .venv
-createdb eventstream_pg
+createdb django_pg_sse
 mise run test        # pytest with coverage
 mise run test-all    # the Python and Django matrix via tox
 mise run lint        # pre-commit, including basedpyright in strict mode
