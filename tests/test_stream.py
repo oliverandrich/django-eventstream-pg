@@ -235,6 +235,13 @@ class StreamTest(StreamTestCase):
         self.assertEqual(await asyncio.wait_for(anext(content_of(response)), 5), messages.CONNECTED.encode())
 
     @stops_the_hub
+    async def test_a_quiet_stream_sends_keepalives(self):
+        # Proxies close a connection that stays silent; a comment line keeps it open.
+        with mock.patch.object(views, "KEEPALIVE_SECONDS", 0.1):
+            stream = await self.open_stream("public:news")
+            self.assertEqual(await asyncio.wait_for(anext(stream), 5), messages.KEEPALIVE.encode())
+
+    @stops_the_hub
     async def test_delivers_a_broadcast_to_the_open_stream(self):
         stream = await self.open_stream("public:news")
         await sync_to_async(publish.broadcast)("public:news", "<p>hi</p>")
