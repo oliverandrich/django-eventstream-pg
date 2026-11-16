@@ -2,14 +2,16 @@
 
 import contextlib
 import functools
+import json
 from typing import Any
 
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.sessions.backends.base import SessionBase
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import connection, transaction
 from django.http import HttpRequest
 
-from django_pg_sse.messages import CHANNEL, LINE_BREAK, RESERVED_PREFIX, Owner
+from django_pg_sse.messages import CHANNEL, LINE_BREAK, RESERVED_EVENTS, RESERVED_PREFIX, Owner
 from django_pg_sse.models import StreamEvent
 
 # Serialises event writers, so ids become visible in the order they are assigned.
@@ -27,7 +29,22 @@ def broadcast(topic: str, data: str, event: str = "") -> None:
         raise ValueError(f"Topics starting with {RESERVED_PREFIX!r} are reserved.")
     if LINE_BREAK.search(event):
         raise ValueError("An SSE event name cannot contain a line break.")
+    if event in RESERVED_EVENTS:
+        raise ValueError(f"The event name {event!r} controls the stream.")
     _broadcast(topic, data, event)
+
+
+def broadcast_json(topic: str, value: Any, *, event: str) -> None:
+    """Send `value` as JSON in an event named `event`, like broadcast().
+
+    DjangoJSONEncoder encodes it, so dates, decimals and UUIDs work.
+    """
+    # htmx would swap a message without an event name into the page as HTML.
+    if not event:
+        raise ValueError("broadcast_json() needs an event name.")
+    # allow_nan=False: JSON.parse() in the browser rejects NaN and Infinity.
+    data = json.dumps(value, cls=DjangoJSONEncoder, separators=(",", ":"), allow_nan=False)
+    broadcast(topic, data, event)
 
 
 def _broadcast(topic: str, data: str, event: str = "") -> None:

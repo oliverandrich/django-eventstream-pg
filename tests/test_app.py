@@ -50,9 +50,10 @@ class MigrationsTest(TestCase):
 
 
 class PublicApiTest(SimpleTestCase):
-    def test_package_exports_broadcast_and_close_streams(self):
+    def test_package_exports_its_public_functions(self):
         import django_pg_sse
         from django_pg_sse import publish
 
         self.assertIs(django_pg_sse.broadcast, publish.broadcast)
         self.assertIs(django_pg_sse.close_streams, publish.close_streams)
+        self.assertIs(django_pg_sse.broadcast_json, publish.broadcast_json)

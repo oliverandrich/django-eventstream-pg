@@ -197,6 +197,15 @@ class StreamTest(StreamTestCase):
         self.assertEqual(message, f"id: {signed(event.id, 'public:news')}\ndata: <p>hi</p>\n\n")
 
     @stops_the_hub
+    async def test_delivers_json_as_a_named_event(self):
+        stream = await self.open_stream("public:news")
+        await sync_to_async(publish.broadcast_json)("public:news", {"online": 12}, event="presence")
+        message = await self.next_message(stream)
+        event = await StreamEvent.objects.aget()
+        expected = f'id: {signed(event.id, "public:news")}\nevent: presence\ndata: {{"online":12}}\n\n'
+        self.assertEqual(message, expected)
+
+    @stops_the_hub
     async def test_other_topics_do_not_reach_the_stream(self):
         stream = await self.open_stream("public:news")
         await sync_to_async(publish.broadcast)("public:other", "<p>no</p>")

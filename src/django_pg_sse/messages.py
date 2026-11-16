@@ -21,7 +21,11 @@ LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 CONNECTED = ": connected\n\n"
 KEEPALIVE = ": keepalive\n\n"
-CLOSED = "event: closed\ndata: \n\n"
+CLOSED_EVENT = "closed"
+CLOSED = f"event: {CLOSED_EVENT}\ndata: \n\n"
+# broadcast() refuses these names. hx-sse:close="closed" ends a stream, and htmx 4 releases its
+# connection on hx:release.
+RESERVED_EVENTS = frozenset({CLOSED_EVENT, "hx:release"})
 
 
 @dataclass(frozen=True)

@@ -57,6 +57,28 @@ A page opens one stream for all its topics:
 htmx swaps each message. Elements with `hx-swap-oob` or `<hx-partial>` update the page anywhere.
 Give list items stable ids, so an event delivered twice replaces its element instead of adding one.
 
+### JSON for client code
+
+`broadcast_json()` sends a value as JSON, encoded with `DjangoJSONEncoder`. It needs an event name.
+
+```python
+from django_pg_sse import broadcast_json
+
+broadcast_json(f"room:{room.pk}", {"online": 12}, event="presence")
+```
+
+htmx dispatches a named event as a DOM event on the element with `hx-sse:connect`. The event
+bubbles, and `event.detail.data` holds the text. `broadcast()` refuses the event names `closed`
+and `hx:release`, which end or release the stream.
+
+```js
+document.body.addEventListener("presence", (event) => {
+  const { online } = JSON.parse(event.detail.data);
+});
+```
+
+Without htmx, `EventSource.addEventListener("presence", ...)` receives the same event.
+
 ## Who may read a topic
 
 `PG_SSE["CAN_SUBSCRIBE"]` names a function `(request, topic) -> bool`. The default opens
@@ -144,7 +166,7 @@ django-pg-sse supports PostgreSQL only and ASGI only. In return it needs no othe
 | Event ids | One sequence, in commit order across all topics | One counter per channel |
 | `Last-Event-ID` | Signed for the user, the session and the topics | Chosen by the client |
 | Revoking access | `close_streams()` for a user or a session, in every process | `channel_permission_changed()` for a user and a channel, in the calling process and at a GRIP proxy |
-| Payload | HTML for htmx, or any text | JSON by default, or any text |
+| Payload | HTML for htmx, JSON for client code, or any text | JSON by default, or any text |
 | Servers | ASGI | ASGI, or WSGI behind a GRIP proxy |
 
 django-eventstream with Pushpin or Fanout holds the open connections outside Django.

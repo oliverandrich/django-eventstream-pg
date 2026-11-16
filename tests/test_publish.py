@@ -1,4 +1,6 @@
 import threading
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -113,6 +115,30 @@ class BroadcastTest(TestCase):
         self.assertEqual(len(callbacks), 1)
         event = StreamEvent.objects.get()
         self.assertEqual((event.topic, event.data, event.event), ("public:news", "<p>hi</p>", ""))
+
+    def test_broadcast_json_sends_compact_json(self):
+        value = {"at": datetime(2026, 11, 16, 12, tzinfo=UTC), "price": Decimal("1.50"), "online": 12}
+        with self.captureOnCommitCallbacks(execute=True):
+            publish.broadcast_json("public:news", value, event="presence")
+        event = StreamEvent.objects.get()
+        expected = '{"at":"2026-11-16T12:00:00Z","price":"1.50","online":12}'
+        self.assertEqual((event.event, event.data), ("presence", expected))
+
+    def test_broadcast_json_needs_an_event_name(self):
+        # htmx swaps a message without an event name as HTML.
+        with self.assertRaises(ValueError):
+            publish.broadcast_json("public:news", {"online": 12}, event="")
+
+    def test_broadcast_json_refuses_nan(self):
+        # JSON.parse() in the browser rejects NaN.
+        with self.assertRaises(ValueError):
+            publish.broadcast_json("public:news", {"ratio": float("nan")}, event="stats")
+
+    def test_event_names_that_control_the_stream_are_refused(self):
+        # hx-sse:close="closed" ends a stream; htmx releases its connection on hx:release.
+        for name in ("closed", "hx:release"):
+            with self.assertRaises(ValueError, msg=name):
+                publish.broadcast("public:news", "x", event=name)
 
     def test_a_failed_publish_is_logged_not_raised(self):
         # The caller's transaction has committed; a 500 would invite a duplicate retry.

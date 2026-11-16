@@ -13,7 +13,7 @@ Guidance for coding agents and contributors. Development setup and commit conven
 ```
 src/django_pg_sse/
 ├── messages.py      # SSE format, NOTIFY payloads, Message, Owner, Signal; no Django imports
-├── publish.py       # broadcast(), close_streams(), the user_logged_out receiver
+├── publish.py       # broadcast(), broadcast_json(), close_streams(), the user_logged_out receiver
 ├── hub.py           # one listener per event loop; fans events out to the loop's streams
 ├── views.py         # the SSE endpoint and its authorisation
 ├── permissions.py   # the default can_subscribe() policy
