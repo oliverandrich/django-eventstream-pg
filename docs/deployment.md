@@ -20,7 +20,8 @@ While the hub reconnects, a newly opened stream sends nothing until the hub list
 
 Caddy 2's `reverse_proxy` flushes `text/event-stream` responses at once, whatever `flush_interval` says.
 Its `encode` directive streams such responses as they are written, according to the Caddy docs.
-nginx buffers proxied responses by default; set `proxy_buffering off;` for the stream's location.
+nginx buffers proxied responses by default.
+The stream sends `X-Accel-Buffering: no`, so nginx passes it through without `proxy_buffering off;`.
 
 ## Pruning
 

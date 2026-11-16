@@ -235,6 +235,16 @@ class StreamTest(StreamTestCase):
         self.assertEqual(await asyncio.wait_for(anext(content_of(response)), 5), messages.CONNECTED.encode())
 
     @stops_the_hub
+    async def test_the_stream_asks_nginx_not_to_buffer(self):
+        # nginx buffers proxied responses unless the response opts out.
+        response = await AsyncClient().get("/events/?topic=public:news")
+        self.assertEqual(response["X-Accel-Buffering"], "no")
+        assert isinstance(response, StreamingHttpResponse)
+        content = response.streaming_content
+        assert isinstance(content, AsyncGenerator)
+        await content.aclose()
+
+    @stops_the_hub
     async def test_a_quiet_stream_sends_keepalives(self):
         # Proxies close a connection that stays silent; a comment line keeps it open.
         with mock.patch.object(views, "KEEPALIVE_SECONDS", 0.1):

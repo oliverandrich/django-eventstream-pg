@@ -54,6 +54,8 @@ async def stream(request: HttpRequest) -> HttpResponseBase:
     messages = _messages(hub, owner, authorized_at, ids, last_event_id, info)
     response = StreamingHttpResponse(messages, content_type="text/event-stream")
     add_never_cache_headers(response)
+    # nginx buffers proxied responses unless the response opts out.
+    response["X-Accel-Buffering"] = "no"
     return response
 
 
