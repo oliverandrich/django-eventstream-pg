@@ -46,6 +46,6 @@ repos:
         args: [--preview-features, audit-command]
 
   - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.39.0
+    rev: 1.40.2
     hooks:
     - id: basedpyright
