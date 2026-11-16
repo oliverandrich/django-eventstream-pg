@@ -18,8 +18,10 @@ DEFAULTS: dict[str, Any] = {
 
 
 def get(name: str) -> Any:
+    """The value of `name` in PG_SSE, or its default."""
     return {**DEFAULTS, **getattr(settings, "PG_SSE", {})}[name]
 
 
 def can_subscribe() -> Callable[[HttpRequest, str], bool]:
+    """The policy function that PG_SSE["CAN_SUBSCRIBE"] names."""
     return import_string(get("CAN_SUBSCRIBE"))

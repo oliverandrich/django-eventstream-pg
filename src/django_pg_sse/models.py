@@ -1,3 +1,5 @@
+"""StreamEvent, the stored events that replay reads."""
+
 # Field annotations name stub-only generics, so they must stay unevaluated at runtime.
 from __future__ import annotations
 

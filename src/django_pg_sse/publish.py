@@ -1,4 +1,4 @@
-"""Sending events: broadcast() and close_streams()."""
+"""Sending events: broadcast(), broadcast_json(), close_streams() and their async variants."""
 
 import contextlib
 import functools
@@ -29,6 +29,10 @@ def broadcast(topic: str, data: str, event: str = "") -> None:
 
     A rollback sends nothing. htmx swaps `data` as HTML. With a name in `event`, htmx dispatches
     a DOM event of that name instead, and `data` may be any text.
+
+    Raises ValueError for a topic starting with `_`, a topic over 200 characters, an event name
+    over 100 characters, an event name with a line break, and the event names `closed` and
+    `hx:release`. Raises SynchronousOnlyOperation in a running event loop; use abroadcast() there.
     """
     if topic.startswith(RESERVED_PREFIX):
         raise ValueError(f"Topics starting with {RESERVED_PREFIX!r} are reserved.")
@@ -47,6 +51,9 @@ def broadcast_json(topic: str, value: Any, *, event: str) -> None:
     """Send `value` as JSON in an event named `event`, like broadcast().
 
     DjangoJSONEncoder encodes it, so dates, decimals and UUIDs work.
+
+    Raises ValueError without an event name and for NaN or Infinity, which JSON.parse() rejects,
+    besides the cases of broadcast(). Raises SynchronousOnlyOperation in a running event loop.
     """
     # htmx would swap a message without an event name into the page as HTML.
     if not event:
@@ -106,6 +113,9 @@ def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase 
 
     Each stream receives an event named "closed" and ends. htmx reconnects, and the subscription
     check runs again, so call this after taking away a user's access to a topic.
+
+    Raises ValueError without a user and a session, and for an anonymous user.
+    Raises SynchronousOnlyOperation in a running event loop; use aclose_streams() there.
     """
     if user is None and session is None:
         raise ValueError("close_streams() needs a user or a session.")
@@ -123,17 +133,17 @@ def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase 
 
 # The sync functions use the database connection, so they run in Django's sync thread.
 async def abroadcast(topic: str, data: str, event: str = "") -> None:
-    """broadcast() for async code."""
+    """broadcast() for async code. It runs in Django's sync thread and raises what broadcast() raises."""
     await sync_to_async(broadcast)(topic, data, event)
 
 
 async def abroadcast_json(topic: str, value: Any, *, event: str) -> None:
-    """broadcast_json() for async code."""
+    """broadcast_json() for async code. It raises what broadcast_json() raises."""
     await sync_to_async(broadcast_json)(topic, value, event=event)
 
 
 async def aclose_streams(*, user: AbstractBaseUser | None = None, session: SessionBase | None = None) -> None:
-    """close_streams() for async code."""
+    """close_streams() for async code. It raises what close_streams() raises."""
     await sync_to_async(close_streams)(user=user, session=session)
 
 

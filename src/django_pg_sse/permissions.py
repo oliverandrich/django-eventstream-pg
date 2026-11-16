@@ -1,3 +1,5 @@
+"""The default policy for who may read a topic."""
+
 from django.http import HttpRequest
 
 

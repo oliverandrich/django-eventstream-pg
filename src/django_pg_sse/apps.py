@@ -1,8 +1,12 @@
+"""The app configuration: system checks and the logout receiver."""
+
 from django.apps import AppConfig, apps
 from django.core import checks
 
 
 class PgSseConfig(AppConfig):
+    """Registers the system checks and, with django.contrib.auth, closes streams on logout."""
+
     # The label stays the module name: PostgreSQL treats names starting with pg_ as system names.
     name = "django_pg_sse"
     verbose_name = "Event stream"

@@ -1,3 +1,5 @@
+"""The prune_stream_events management command."""
+
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +12,8 @@ from django_pg_sse.models import StreamEvent
 
 
 class Command(BaseCommand):
+    """manage.py prune_stream_events [--hours N]: delete events older than the retention."""
+
     help = "Delete stream events older than the retention, which is how far back Last-Event-ID reaches."
 
     def add_arguments(self, parser: CommandParser) -> None:

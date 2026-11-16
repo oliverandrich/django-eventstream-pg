@@ -30,6 +30,8 @@ RESERVED_EVENTS = frozenset({CLOSED_EVENT, "hx:release"})
 
 @dataclass(frozen=True)
 class Message:
+    """A stored event as the hub delivers it to streams."""
+
     id: int
     topic: str
     event: str
@@ -44,6 +46,8 @@ class Message:
 
 
 class Signal(Enum):
+    """The last item a stream's queue receives when the hub ends the stream."""
+
     # The client fell too far behind. The stream ends, and htmx reconnects with Last-Event-ID,
     # so the replay delivers what the queue dropped.
     OVERFLOW = "overflow"
@@ -66,6 +70,7 @@ class Owner:
 
 
 def digest(value: str) -> str:
+    """The SHA-256 hex digest of `value`, which keeps session keys and primary keys out of topics."""
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -103,6 +108,7 @@ def format_event(event: Message, event_id: str) -> str:
 
 
 def notify_payload(event_id: int, topic: str) -> str:
+    """The NOTIFY payload for an event: its id and topic, as `<id>:<topic>`."""
     # NOTIFY payloads are limited to 8000 bytes, so the data stays in the table.
     # The topic lets a process without subscribers skip loading the event.
     # publish._publish_sql() builds the same payload in SQL.
@@ -117,5 +123,6 @@ def parse_payload(payload: str) -> tuple[int, str] | None:
 
 
 def parse_last_event_id(value: str) -> int | None:
+    """`value` as an event id if it is a plain decimal number, otherwise None."""
     # isdigit() alone accepts characters such as "²", which int() rejects.
     return int(value) if value.isascii() and value.isdigit() else None

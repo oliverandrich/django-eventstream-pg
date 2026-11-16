@@ -9,17 +9,17 @@ from django.dispatch import Signal
 class StreamInfo:
     """One open stream, the `stream` argument of both signals."""
 
-    # A new id for each connection; a reconnect of the same tab gets another.
+    #: A new random id for each connection; a reconnect of the same tab gets another.
     id: str
-    # None for an anonymous stream.
+    #: The user's primary key as a string, or None for an anonymous stream.
     user_pk: str | None
-    # The SHA-256 digest of the session key, never the key; None for an anonymous stream.
+    #: The SHA-256 digest of the session key, never the key; None for an anonymous stream.
     session: str | None
+    #: The topics of the stream, in the order of the query string.
     topics: tuple[str, ...]
 
 
-# Both signals pass sender=StreamInfo.
-# Sent once the stream's subscription is in place, before its first message.
+#: Sent with sender=StreamInfo once a stream's subscription is in place, before its first message.
 stream_opened = Signal()
-# Sent when the stream ends in a running process. A killed process sends nothing.
+#: Sent with sender=StreamInfo when the stream ends in a running process. A killed process sends nothing.
 stream_closed = Signal()
