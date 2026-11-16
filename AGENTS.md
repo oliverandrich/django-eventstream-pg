@@ -35,7 +35,9 @@ src/django_eventstream_pg/
 - `Hub._listen()` passes every NOTIFY already received to `_receive()` at once.
   `_receive()` loads their events with `id = ANY`, again for streams that subscribed meanwhile.
   It delivers without an await in between and advances `last_id` only afterwards.
-- An open stream holds no connection from Django's pool. The hub uses two connections of its own.
+- An open stream holds no connection from Django's pool. The hub uses three connections of its own.
+  `Hub.live` runs the queries of live delivery and of the catch-up.
+  `Hub.streams` runs the view's replay and revocation queries.
   `views._messages()` closes the request thread's connection after the response middleware.
 - The hub's connections bypass Django's connection setup, so `_connect()` applies `assume_role`.
 - A stream sends event ids signed by `EventIds` for its owner's close topics and its topics.

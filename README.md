@@ -107,8 +107,9 @@ Run `manage.py prune_stream_events` regularly, for example hourly; it deletes ev
 - `broadcast()` writes the event after the commit, in a short transaction that holds an advisory
   lock. Event ids therefore become visible in order, which keeps the replay exact.
 - `NOTIFY` carries only the id and the topic, so the 8000-byte payload limit does not apply.
-- Each ASGI worker runs one listener with two connections outside Django's pool, however many
-  streams are open. Open streams hold no pooled connection.
+- Each ASGI worker holds up to three connections outside Django's pool, however many streams are open.
+  They serve LISTEN, live delivery and the queries of opening streams.
+  Open streams hold no pooled connection.
 - A listener that loses its connection reconnects and loads the events it missed from the table.
 - The view opts out of `ATOMIC_REQUESTS`, which Django does not allow for async views.
 - `close_streams()` stores an event on a close topic of the user or the session.

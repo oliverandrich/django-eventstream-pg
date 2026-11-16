@@ -40,11 +40,35 @@ async def _connect() -> psycopg.AsyncConnection[tuple[Any, ...]]:
     return conn
 
 
+class _Connection:
+    """A connection outside Django's pool for one query at a time. It reconnects when broken."""
+
+    def __init__(self) -> None:
+        self.connection: psycopg.AsyncConnection[tuple[Any, ...]] | None = None
+        self.lock = asyncio.Lock()
+
+    async def fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
+        async with self.lock:
+            # closed is also true for a broken connection.
+            if self.connection is None or self.connection.closed:
+                self.connection = await _connect()
+            cursor = await self.connection.execute(query, params)
+            return await cursor.fetchall()
+
+    async def close(self) -> None:
+        connection, self.connection = self.connection, None
+        if connection is not None:
+            await connection.close()
+
+
 class Hub:
     """Fans NOTIFY out to the open streams of one event loop, which is one ASGI worker.
 
-    It holds two connections of its own, outside Django's pool: one waits on LISTEN, the other
-    loads events. An open stream therefore holds no pooled connection.
+    It holds up to three connections of its own, outside Django's pool.
+    The listener's connection waits on LISTEN.
+    `live` loads the events the hub delivers.
+    `streams` runs the queries of opening streams.
+    An open stream therefore holds no pooled connection.
     """
 
     def __init__(self) -> None:
@@ -54,8 +78,9 @@ class Hub:
         self.ready = asyncio.Event()
         self.last_id: int | None = None
         self.task: asyncio.Task[None] | None = None
-        self.fetch_connection: psycopg.AsyncConnection[tuple[Any, ...]] | None = None
-        self.fetch_lock = asyncio.Lock()
+        self.live = _Connection()
+        # Replays wait for each other here, not for live delivery.
+        self.streams = _Connection()
 
     def subscribe(self, topics: list[str], owner: Owner) -> Queue:
         """A queue that receives the events of `topics` and the closes of `owner`.
@@ -79,14 +104,12 @@ class Hub:
 
     async def replay(self, topics: list[str], after_id: int) -> list[Message]:
         """Up to REPLAY_BATCH events of `topics` after `after_id`, oldest first."""
-        query = _select("WHERE topic = ANY(%s) AND id > %s ORDER BY id LIMIT %s")
-        rows = await self._fetch(query, [topics, after_id, REPLAY_BATCH])
-        return [Message(*row) for row in rows]
+        return await _replay(self.streams, topics, after_id)
 
     async def any_since(self, topics: list[str], after_id: int) -> bool:
         """Whether one of `topics` has an event after `after_id`."""
         query = _select("WHERE topic = ANY(%s) AND id > %s LIMIT 1")
-        return bool(await self._fetch(query, [topics, after_id]))
+        return bool(await self.streams.fetch(query, [topics, after_id]))
 
     async def stop(self) -> None:
         # The listener task references the loop, so the weak key would never be collected.
@@ -97,15 +120,10 @@ class Hub:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.task
-        if self.fetch_connection is not None:
-            await self.fetch_connection.close()
-
-    async def _fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
-        async with self.fetch_lock:
-            if self.fetch_connection is None or self.fetch_connection.broken:
-                self.fetch_connection = await _connect()
-            cursor = await self.fetch_connection.execute(query, params)
-            return await cursor.fetchall()
+        try:
+            await self.live.close()
+        finally:
+            await self.streams.close()
 
     async def _listen(self) -> None:
         delays = RECONNECT_DELAYS
@@ -145,7 +163,7 @@ class Hub:
         # A stream may subscribe while a query runs, so each query is followed by another check.
         while wanted := [event_id for event_id, topic in events if topic in self.queues and event_id not in requested]:
             requested.update(wanted)
-            rows = await self._fetch(_select("WHERE id = ANY(%s)"), [wanted])
+            rows = await self.live.fetch(_select("WHERE id = ANY(%s)"), [wanted])
             loaded |= {row[0]: Message(*row) for row in rows}
         # No await from here on, so the subscriptions stay as checked.
         for event_id in sorted(loaded):
@@ -159,11 +177,11 @@ class Hub:
         # LISTEN is active now, so events committed while it was not are in the table.
         if self.last_id is None:
             query = sql.SQL("SELECT coalesce(max(id), 0) FROM {}").format(_table())
-            rows = await self._fetch(query, [])
+            rows = await self.live.fetch(query, [])
             self.last_id = rows[0][0]
             return
         while True:
-            messages = await self.replay(list(self.queues), self.last_id)
+            messages = await _replay(self.live, list(self.queues), self.last_id)
             for message in messages:
                 self._deliver(message)
             if len(messages) < REPLAY_BATCH:
@@ -191,6 +209,12 @@ class Hub:
         while not queue.empty():
             queue.get_nowait()
         queue.put_nowait(signal)
+
+
+async def _replay(connection: _Connection, topics: list[str], after_id: int) -> list[Message]:
+    query = _select("WHERE topic = ANY(%s) AND id > %s ORDER BY id LIMIT %s")
+    rows = await connection.fetch(query, [topics, after_id, REPLAY_BATCH])
+    return [Message(*row) for row in rows]
 
 
 def _table() -> sql.Identifier:
