@@ -45,7 +45,7 @@ def allow_every_topic(request: HttpRequest, topic: str) -> bool:  # noqa: ARG001
 
 def signed(event_id: int, *topics: str) -> str:
     """The id an anonymous stream for `topics` sends for `event_id`."""
-    return messages.EventIds(messages.Owner(frozenset()), list(topics)).sign(event_id)
+    return messages.EventIds(messages.Owner(()), list(topics)).sign(event_id)
 
 
 def terminate_listener() -> None:
@@ -119,9 +119,10 @@ class StreamTest(StreamTestCase):
         self.assertEqual(response.status_code, 400)
 
     @override_settings(EVENTSTREAM_PG={"CAN_SUBSCRIBE": "tests.test_stream.allow_every_topic"})
-    async def test_refuses_the_close_topic_whatever_can_subscribe_allows(self):
-        response = await AsyncClient().get(f"/events/?topic={messages.CLOSE_TOPIC}")
-        self.assertEqual(response.status_code, 403)
+    async def test_refuses_reserved_topics_whatever_can_subscribe_allows(self):
+        for topic in ("_close", "_close:user:1", "_presence"):
+            response = await AsyncClient().get(f"/events/?topic=public:news&topic={topic}")
+            self.assertEqual(response.status_code, 403, topic)
 
     @stops_the_hub
     async def test_returns_its_connection_after_the_response_middleware(self):
@@ -343,19 +344,34 @@ class CloseStreamsTest(StreamTestCase):
         with mock.patch.object(hub_module, "QUEUE_SIZE", 2):
             queue = hub.subscribe(["public:news"], owner)
         try:
-            hub._close("user:7")  # pyright: ignore[reportPrivateUsage]
-            for event_id in range(1, 5):
+            (close_topic,) = owner.close_topics
+            hub._deliver(messages.Message(1, close_topic, "", ""))  # pyright: ignore[reportPrivateUsage]
+            for event_id in range(2, 6):
                 hub._deliver(messages.Message(event_id, "public:news", "", "<p>x</p>"))  # pyright: ignore[reportPrivateUsage]
             self.assertEqual([queue.get_nowait() for _ in range(queue.qsize())], [messages.Signal.REVOKED])
         finally:
             await hub.stop()
 
-    async def test_a_process_without_targets_skips_loading_closes(self):
+    async def test_a_close_needs_no_query(self):
+        # The NOTIFY payload names the close topic, which is all a close carries.
         hub = hub_module.Hub()
-        with mock.patch.object(hub, "_fetch") as fetch:
-            await hub._receive(f"5:{messages.CLOSE_TOPIC}")  # pyright: ignore[reportPrivateUsage]
+        owner = messages.Owner.of(user="7", session=None)
+        with mock.patch.object(hub, "_listen", mock.AsyncMock()), mock.patch.object(hub, "_fetch") as fetch:
+            queue = hub.subscribe(["public:news"], owner)
+            await hub._receive(messages.notify_payload(5, owner.close_topics[0]))  # pyright: ignore[reportPrivateUsage]
         fetch.assert_not_called()
-        self.assertEqual(hub.last_id, 5)
+        self.assertIs(queue.get_nowait(), messages.Signal.REVOKED)
+
+    async def test_a_process_loads_no_close_for_another_owner(self):
+        ada, bob = await User.objects.acreate_user("ada"), await User.objects.acreate_user("bob")
+        await sync_to_async(publish.close_streams)(user=bob)
+        close = await StreamEvent.objects.aget()
+        hub = hub_module.Hub()
+        with mock.patch.object(hub, "_listen", mock.AsyncMock()), mock.patch.object(hub, "_fetch") as fetch:
+            hub.subscribe(["public:news"], messages.Owner.of(user=str(ada.pk), session=None))
+            await hub._receive(messages.notify_payload(close.id, close.topic))  # pyright: ignore[reportPrivateUsage]
+        fetch.assert_not_called()
+        self.assertEqual(hub.last_id, close.id)
 
 
 class CloseStreamsArgumentsTest(SimpleTestCase):

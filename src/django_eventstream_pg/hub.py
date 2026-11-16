@@ -10,7 +10,7 @@ import psycopg
 from django.db import connection
 from psycopg import sql
 
-from django_eventstream_pg.messages import CHANNEL, CLOSE_TOPIC, Message, Owner, Signal, parse_payload
+from django_eventstream_pg.messages import CHANNEL, CLOSE_PREFIX, Message, Owner, Signal, parse_payload
 from django_eventstream_pg.models import StreamEvent
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,8 @@ class Hub:
 
     def __init__(self) -> None:
         self.queues: dict[str, set[Queue]] = {}
-        self.by_target: dict[str, set[Queue]] = {}
-        # The topics and targets of each queue, so a queue can leave both indexes at once.
-        self.subscriptions: dict[Queue, tuple[list[str], frozenset[str]]] = {}
+        # The topics of each queue, its owner's close topics included, so it can leave the index.
+        self.subscriptions: dict[Queue, list[str]] = {}
         self.ready = asyncio.Event()
         self.last_id: int | None = None
         self.task: asyncio.Task[None] | None = None
@@ -59,23 +58,24 @@ class Hub:
         self.fetch_lock = asyncio.Lock()
 
     def subscribe(self, topics: list[str], owner: Owner) -> Queue:
-        """A queue that receives the events of `topics`. Starts the listener on first use."""
+        """A queue that receives the events of `topics` and the closes of `owner`.
+
+        Starts the listener on first use.
+        """
         queue: Queue = asyncio.Queue(QUEUE_SIZE)
-        self.subscriptions[queue] = (topics, owner.targets)
-        for target in owner.targets:
-            self.by_target.setdefault(target, set()).add(queue)
-        for topic in topics:
+        self.subscriptions[queue] = keys = [*topics, *owner.close_topics]
+        for topic in keys:
             self.queues.setdefault(topic, set()).add(queue)
         if self.task is None or self.task.done():
             self.task = asyncio.get_running_loop().create_task(self._listen())
         return queue
 
     def unsubscribe(self, queue: Queue) -> None:
-        if (subscription := self.subscriptions.pop(queue, None)) is None:
-            return
-        topics, targets = subscription
-        _discard(self.by_target, targets, queue)
-        _discard(self.queues, topics, queue)
+        for topic in self.subscriptions.pop(queue, ()):
+            queues = self.queues.get(topic, set())
+            queues.discard(queue)
+            if not queues:
+                self.queues.pop(topic, None)
 
     async def replay(self, topics: list[str], after_id: int) -> list[Message]:
         """Up to REPLAY_BATCH events of `topics` after `after_id`, oldest first."""
@@ -83,10 +83,10 @@ class Hub:
         rows = await self._fetch(query, [topics, after_id, REPLAY_BATCH])
         return [Message(*row) for row in rows]
 
-    async def closed_since(self, targets: frozenset[str], after_id: int) -> bool:
-        """Whether close_streams() named one of `targets` after `after_id`."""
-        query = _select("WHERE topic = %s AND id > %s AND html = ANY(%s) LIMIT 1")
-        return bool(await self._fetch(query, [CLOSE_TOPIC, after_id, list(targets)]))
+    async def any_since(self, topics: list[str], after_id: int) -> bool:
+        """Whether one of `topics` has an event after `after_id`."""
+        query = _select("WHERE topic = ANY(%s) AND id > %s LIMIT 1")
+        return bool(await self._fetch(query, [topics, after_id]))
 
     async def stop(self) -> None:
         # The listener task references the loop, so the weak key would never be collected.
@@ -133,10 +133,13 @@ class Hub:
             logger.warning("Ignored a NOTIFY on %s with the payload %r.", CHANNEL, payload)
             return
         event_id, topic = parsed
-        readers = self.by_target if topic == CLOSE_TOPIC else self.queues.get(topic)
-        if not readers:
+        if topic not in self.queues:
             # No stream here reads the topic; ids still advance for the catch-up after a reconnect.
             self.last_id = max(self.last_id or 0, event_id)
+            return
+        if topic.startswith(CLOSE_PREFIX):
+            # A close carries nothing beyond its topic, which the payload names.
+            self._deliver(Message(event_id, topic, "", ""))
             return
         for row in await self._fetch(_select("WHERE id = %s"), [event_id]):
             self._deliver(Message(*row))
@@ -149,25 +152,23 @@ class Hub:
             self.last_id = rows[0][0]
             return
         while True:
-            messages = await self.replay([*self.queues, CLOSE_TOPIC], self.last_id)
+            messages = await self.replay(list(self.queues), self.last_id)
             for message in messages:
                 self._deliver(message)
             if len(messages) < REPLAY_BATCH:
                 return
-
-    def _close(self, target: str) -> None:
-        for queue in list(self.by_target.get(target, ())):
-            self._end(queue, Signal.REVOKED)
 
     def _deliver(self, message: Message) -> None:
         # Ids become visible in order, so an id at or below last_id was delivered before.
         if self.last_id is not None and message.id <= self.last_id:
             return
         self.last_id = message.id
-        if message.topic == CLOSE_TOPIC:
-            self._close(message.html)
+        queues = list(self.queues.get(message.topic, ()))
+        if message.topic.startswith(CLOSE_PREFIX):
+            for queue in queues:
+                self._end(queue, Signal.REVOKED)
             return
-        for queue in list(self.queues.get(message.topic, ())):
+        for queue in queues:
             try:
                 queue.put_nowait(message)
             except asyncio.QueueFull:
@@ -179,14 +180,6 @@ class Hub:
         while not queue.empty():
             queue.get_nowait()
         queue.put_nowait(signal)
-
-
-def _discard(index: dict[str, set[Queue]], keys: list[str] | frozenset[str], queue: Queue) -> None:
-    for key in keys:
-        queues = index.get(key, set())
-        queues.discard(queue)
-        if not queues:
-            index.pop(key, None)
 
 
 def _table() -> sql.Identifier:

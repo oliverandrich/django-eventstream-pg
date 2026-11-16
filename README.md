@@ -61,6 +61,8 @@ Give list items stable ids, so an event delivered twice replaces its element ins
 
 `EVENTSTREAM_PG["CAN_SUBSCRIBE"]` names a function `(request, topic) -> bool`. The default opens
 `public:` topics to everyone and `user:<pk>` to that user, and closes every other kind.
+Topics starting with `_` belong to the package. The view refuses them before the check runs,
+and `broadcast()` raises `ValueError` for them.
 
 ```python
 EVENTSTREAM_PG = {"CAN_SUBSCRIBE": "myproject.events.can_subscribe"}
@@ -109,7 +111,9 @@ Run `manage.py prune_stream_events` regularly, for example hourly; it deletes ev
   streams are open. Open streams hold no pooled connection.
 - A listener that loses its connection reconnects and loads the events it missed from the table.
 - The view opts out of `ATOMIC_REQUESTS`, which Django does not allow for async views.
-- `close_streams()` stores a digest of the session key, not the key itself.
+- `close_streams()` stores an event on a close topic of the user or the session.
+  Only a process with a stream of that owner acts on it, and it needs no query.
+- A close topic holds a SHA-256 digest of the user's primary key or the session key.
 
 ## License
 

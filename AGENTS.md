@@ -27,14 +27,15 @@ src/django_eventstream_pg/
 
 - `broadcast()` writes after the commit, in a short transaction holding an advisory lock.
   Event ids therefore become visible in order. Replay after `Last-Event-ID` depends on it.
-- `close_streams()` stores its targets as events on the topic `_close`. They replay like any
-  event, so a listener that reconnects still applies them.
-- A session target holds the SHA-256 digest of the session key, never the key itself.
-  The view refuses `_close` before `CAN_SUBSCRIBE` runs.
+- Topics starting with `_` are reserved. The view refuses them before `CAN_SUBSCRIBE` runs,
+  and `broadcast()` raises `ValueError`. Package code writes them through `_broadcast()`.
+- `close_streams()` stores an event on each close topic of the owner, `_close:<kind>:<sha256>`.
+  The hub indexes close topics like any topic, so a listener that reconnects still applies them.
+- The digest keeps the session key out of the table and fits any primary key into the column.
 - An open stream holds no connection from Django's pool. The hub uses two connections of its own.
   `views._messages()` closes the request thread's connection after the response middleware.
 - The hub's connections bypass Django's connection setup, so `_connect()` applies `assume_role`.
-- A stream sends event ids signed by `EventIds` for its owner targets and topics.
+- A stream sends event ids signed by `EventIds` for its owner's close topics and its topics.
   Replay needs a validly signed id and no close for the owner after that id.
 - `__init__.py` must not import the model at module level. Django imports the package while it
   loads `INSTALLED_APPS`, before models can load.

@@ -8,7 +8,7 @@ from django.db import connection, transaction
 from django.db.backends.utils import CursorWrapper
 from django.http import HttpRequest
 
-from django_eventstream_pg.messages import CHANNEL, CLOSE_TOPIC, LINE_BREAK, Owner, notify_payload
+from django_eventstream_pg.messages import CHANNEL, LINE_BREAK, RESERVED_PREFIX, Owner, notify_payload
 from django_eventstream_pg.models import StreamEvent
 
 # Serialises event writers, so ids become visible in the order they are assigned.
@@ -22,9 +22,14 @@ def broadcast(topic: str, html: str, event: str = "") -> None:
     A rollback sends nothing. With a name in `event`, htmx dispatches a DOM event instead of
     swapping the html.
     """
+    if topic.startswith(RESERVED_PREFIX):
+        raise ValueError(f"Topics starting with {RESERVED_PREFIX!r} are reserved.")
     if LINE_BREAK.search(event):
         raise ValueError("An SSE event name cannot contain a line break.")
+    _broadcast(topic, html, event)
 
+
+def _broadcast(topic: str, html: str, event: str = "") -> None:
     # A function, not functools.partial: Django before 6.1 logs a robust callback's failure
     # through its __qualname__, which partial objects lack.
     def publish() -> None:
@@ -54,12 +59,12 @@ def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase 
     if user is None and session is None:
         raise ValueError("close_streams() needs a user or a session.")
     # A session without a key was never saved, so no stream was opened with it.
-    targets = Owner.of(
+    owner = Owner.of(
         user=str(user.pk) if user is not None else None,
         session=session.session_key if session is not None else None,
-    ).targets
-    for target in sorted(targets):
-        broadcast(CLOSE_TOPIC, target)
+    )
+    for topic in owner.close_topics:
+        _broadcast(topic, "")
 
 
 # Signals pass sender by keyword, so it keeps its name although the receiver ignores it.

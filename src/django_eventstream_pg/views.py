@@ -14,10 +14,10 @@ from django_eventstream_pg import conf
 from django_eventstream_pg import hub as hub_module
 from django_eventstream_pg.hub import Hub, get_hub
 from django_eventstream_pg.messages import (
-    CLOSE_TOPIC,
     CLOSED,
     CONNECTED,
     KEEPALIVE,
+    RESERVED_PREFIX,
     EventIds,
     Owner,
     Signal,
@@ -35,8 +35,8 @@ async def stream(request: HttpRequest) -> HttpResponseBase:
     topics = request.GET.getlist("topic")
     if not topics:
         return HttpResponseBadRequest("Name at least one topic.")
-    # Close events name hashed session keys; no CAN_SUBSCRIBE policy may open them.
-    if CLOSE_TOPIC in topics:
+    # Reserved topics carry the package's own events, such as closes; no CAN_SUBSCRIBE may open them.
+    if any(topic.startswith(RESERVED_PREFIX) for topic in topics):
         return HttpResponseForbidden()
     hub = get_hub()
     # Read before the check: a close committed after it has a larger id and is caught later.
@@ -66,12 +66,12 @@ def _authorize(request: HttpRequest, topics: list[str], known: int | None) -> tu
     can_subscribe = conf.can_subscribe()
     if not all(can_subscribe(request, topic) for topic in topics):
         return None
-    # Anonymous streams have no targets: close_streams() needs a user or a session login.
+    # Anonymous streams have no close topics: close_streams() needs a user or a session login.
     if request.user.is_authenticated:
         owner = Owner.of(user=str(request.user.pk), session=request.session.session_key)
         authorized_at = known or 0
     else:
-        owner, authorized_at = Owner(frozenset()), 0
+        owner, authorized_at = Owner(()), 0
     return owner, authorized_at, EventIds(owner, topics)
 
 
@@ -120,8 +120,8 @@ async def _messages(
 
 
 async def _revoked_since(hub: Hub, owner: Owner, event_id: int) -> bool:
-    # Anonymous streams have no targets, so no close can name them.
-    return bool(owner.targets) and await hub.closed_since(owner.targets, event_id)
+    # Anonymous streams have no close topics, so no close can name them.
+    return bool(owner.close_topics) and await hub.any_since(list(owner.close_topics), event_id)
 
 
 def _close_connection() -> None:

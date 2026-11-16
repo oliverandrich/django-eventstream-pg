@@ -6,6 +6,7 @@ import psycopg
 from django.contrib.sessions.backends.db import SessionStore
 from django.db import connection, transaction
 from django.db.backends.utils import CursorWrapper
+from django.db.models import CharField
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from psycopg import sql
 
@@ -50,6 +51,19 @@ class FormatTest(SimpleTestCase):
         with self.assertRaises(ValueError):
             publish.broadcast("public:news", "x", event="a\ndata: b")
 
+    def test_reserved_topics_reject_a_broadcast(self):
+        with self.assertRaises(ValueError):
+            publish.broadcast("_close:user:7", "")
+
+    def test_close_topics_fit_the_topic_column(self):
+        owner = messages.Owner.of(user="x" * 300, session="s" * 300)
+        field = StreamEvent._meta.get_field("topic")
+        assert isinstance(field, CharField)
+        limit = field.max_length
+        assert limit is not None
+        for topic in owner.close_topics:
+            self.assertLessEqual(len(topic), limit)
+
     def test_payload_carries_id_and_topic(self):
         self.assertEqual(messages.parse_payload("12:room:3"), (12, "room:3"))
         self.assertIsNone(messages.parse_payload("ping"))
@@ -64,13 +78,13 @@ class FormatTest(SimpleTestCase):
         for other_owner, other_topics in [
             (messages.Owner.of(user="8", session="abc"), topics),
             (messages.Owner.of(user="7", session="new"), topics),
-            (messages.Owner(frozenset()), topics),
+            (messages.Owner(()), topics),
             (owner, ["public:news"]),
         ]:
             self.assertIsNone(messages.EventIds(other_owner, other_topics).unsign(signed))
 
     def test_an_unsigned_or_forged_id_resumes_nothing(self):
-        ids = messages.EventIds(messages.Owner(frozenset()), ["public:news"])
+        ids = messages.EventIds(messages.Owner(()), ["public:news"])
         for value in ("", "42", "42:forged", ids.sign(42) + "0"):
             self.assertIsNone(ids.unsign(value), value)
 
@@ -88,7 +102,8 @@ class CloseEventTest(TestCase):
         assert session.session_key is not None
         with self.captureOnCommitCallbacks(execute=True):
             publish.close_streams(session=session)
-        self.assertNotIn(session.session_key, StreamEvent.objects.get().html)
+        close = StreamEvent.objects.get()
+        self.assertNotIn(session.session_key, close.topic + close.html)
 
 
 class BroadcastTest(TestCase):

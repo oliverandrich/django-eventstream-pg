@@ -11,9 +11,10 @@ from django.core import signing
 
 # The PostgreSQL channel that carries "<id>:<topic>" for every stored event.
 CHANNEL = "eventstream_pg"
-# close_streams() stores its targets as events on this topic, so they replay like any event.
-# The view refuses it before CAN_SUBSCRIBE runs.
-CLOSE_TOPIC = "_close"
+# Topics with this prefix belong to the package. The view refuses them before CAN_SUBSCRIBE runs.
+RESERVED_PREFIX = "_"
+# close_streams() stores an event on each close topic of the owner, so it replays like any event.
+CLOSE_PREFIX = RESERVED_PREFIX + "close:"
 
 # SSE ends a line at CRLF, CR or LF, so each of them must start a new data field.
 LINE_BREAK = re.compile(r"\r\n|\r|\n")
@@ -48,19 +49,16 @@ class Signal(Enum):
 
 @dataclass(frozen=True)
 class Owner:
-    """The targets close_streams() matches against a stream."""
+    """The topics on which close_streams() ends a stream of this user or session, sorted."""
 
-    targets: frozenset[str]
+    close_topics: tuple[str, ...]
 
     @classmethod
     def of(cls, *, user: str | None, session: str | None) -> "Owner":
-        targets: set[str] = set()
-        if user is not None:
-            targets.add(f"user:{user}")
-        if session is not None:
-            # Close events are stored, so they carry a digest instead of the session key.
-            targets.add(f"session:{hashlib.sha256(session.encode()).hexdigest()}")
-        return cls(frozenset(targets))
+        keys = {kind: key for kind, key in (("user", user), ("session", session)) if key is not None}
+        # A digest keeps the session key out of the table and fits any primary key into the column.
+        topics = (f"{CLOSE_PREFIX}{kind}:{hashlib.sha256(key.encode()).hexdigest()}" for kind, key in keys.items())
+        return cls(tuple(sorted(topics)))
 
 
 class EventIds:
@@ -71,7 +69,7 @@ class EventIds:
     """
 
     def __init__(self, owner: Owner, topics: list[str]) -> None:
-        self.salt = "django_eventstream_pg.ids:" + json.dumps([sorted(owner.targets), sorted(set(topics))])
+        self.salt = "django_eventstream_pg.ids:" + json.dumps([owner.close_topics, sorted(set(topics))])
         self.signer = signing.Signer(salt=self.salt)
 
     def sign(self, event_id: int) -> str:
