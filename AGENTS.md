@@ -42,6 +42,8 @@ src/django_eventstream_pg/
   `Hub.streams` runs the view's replay and revocation queries.
   `views._messages()` closes the request thread's connection after the response middleware.
 - The hub's connections bypass Django's connection setup, so `_connect()` applies `assume_role`.
+  `connect_params()` uses `get_connection_params()`, which drops `pool`, `isolation_level` and
+  `server_side_binding`. It also drops Django's `cursor_factory` and `context`.
 - A stream sends event ids signed by `EventIds` for its owner's close topics and its topics.
   Replay needs a validly signed id and no close for the owner after that id.
 - `__init__.py` must not import the model at module level. Django imports the package while it

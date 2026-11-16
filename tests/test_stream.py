@@ -452,10 +452,20 @@ class CloseStreamsArgumentsTest(SimpleTestCase):
 ROLE = "eventstream_pg_test_role"
 
 
-class AssumeRoleTest(TransactionTestCase):
+class HubConnectionOptionsTest(TransactionTestCase):
     def run_sql(self, statement: str) -> None:
         with connection.cursor() as cursor:
             cursor.execute(sql.SQL(statement).format(sql.Identifier(ROLE)))  # pyright: ignore[reportArgumentType]
+
+    async def test_hub_connections_take_the_libpq_options(self):
+        options = {**connection.settings_dict["OPTIONS"], "application_name": "eventstream-pg-test"}
+        hub = hub_module.Hub()
+        try:
+            with mock.patch.dict(connection.settings_dict, OPTIONS=options):
+                rows = await hub.live.fetch(sql.SQL("SELECT current_setting('application_name')"), [])
+        finally:
+            await hub.stop()
+        self.assertEqual(rows, [("eventstream-pg-test",)])
 
     async def test_hub_connections_take_the_configured_role(self):
         await sync_to_async(self.run_sql)("DROP ROLE IF EXISTS {}")

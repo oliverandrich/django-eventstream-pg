@@ -102,6 +102,17 @@ The events from the time without access then stay unread.
 Run `manage.py prune_stream_events` regularly, for example hourly; it deletes events older than
 `EVENTSTREAM_PG["RETENTION_HOURS"]` (default 24).
 
+## Database connections
+
+The hub's connections use `DATABASES["default"]`, outside Django's connection pool.
+
+- They take its host, port, user, password and the libpq `OPTIONS`, such as `sslmode`, `service`,
+  `passfile`, `application_name` and `prepare_threshold`.
+- They apply `OPTIONS["assume_role"]` with `SET ROLE`.
+- `pool`, `isolation_level` and `server_side_binding` do not apply. The hub runs in autocommit.
+- LISTEN needs a session. A PgBouncer in transaction mode cannot carry it.
+  With such a PgBouncer, point `default` straight at PostgreSQL.
+
 ## How it works
 
 - `broadcast()` writes the event after the commit, in a short transaction that holds an advisory
