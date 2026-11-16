@@ -1,13 +1,12 @@
 import threading
 from typing import Any
-from unittest import mock
 
 import psycopg
 from django.contrib.sessions.backends.db import SessionStore
 from django.db import connection, transaction
-from django.db.backends.utils import CursorWrapper
 from django.db.models import CharField
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 from psycopg import sql
 
 from django_eventstream_pg import hub as hub_module
@@ -117,11 +116,11 @@ class BroadcastTest(TestCase):
 
     def test_a_failed_publish_is_logged_not_raised(self):
         # The caller's transaction has committed; a 500 would invite a duplicate retry.
-        failure = mock.patch.object(StreamEvent.objects, "create", side_effect=RuntimeError("down"))
         # Production logs to django.db.backends.base; captureOnCommitCallbacks to django.test.
-        with failure, self.assertLogs("django", "ERROR"):
-            with self.captureOnCommitCallbacks(execute=True):
-                publish.broadcast("public:news", "<p>hi</p>")
+        with self.assertLogs("django", "ERROR"), self.captureOnCommitCallbacks(execute=True):
+            publish.broadcast("public:" + "x" * 300, "<p>hi</p>")
+        # A savepoint keeps the failure from aborting the surrounding transaction.
+        self.assertFalse(StreamEvent.objects.exists())
 
     def test_a_rollback_sends_nothing(self):
         with self.captureOnCommitCallbacks(execute=True):
@@ -135,34 +134,47 @@ class NotifyTest(TransactionTestCase):
     def test_notifies_listeners_with_the_event_id(self):
         conn = self.enterContext(listener())
         publish.broadcast("public:news", "<p>hi</p>")
-        self.assertEqual(notified_ids(conn, 1), [StreamEvent.objects.get().id])
+        (notify,) = conn.notifies(timeout=5, stop_after=1)
+        # The statement builds the payload in SQL; the hub parses the format of notify_payload().
+        self.assertEqual(notify.payload, messages.notify_payload(StreamEvent.objects.get().id, "public:news"))
 
-    def test_events_become_visible_in_id_order(self):
+    def test_publishes_with_one_statement(self):
+        # on_commit callbacks run in autocommit, where no savepoint is needed.
+        with CaptureQueriesContext(connection) as queries:
+            publish.broadcast("public:news", "<p>hi</p>")
+        self.assertEqual(len(queries), 1, [query["sql"] for query in queries])
+
+    def test_an_event_takes_its_id_under_the_lock(self):
         # Replay after Last-Event-ID is exact only if no smaller id commits after a larger one.
-        conn = self.enterContext(listener())
-        first_holds_the_lock = threading.Event()
-        original_notify = publish._notify  # pyright: ignore[reportPrivateUsage]
+        holder = self.enterContext(psycopg.connect(**hub_module.connect_params(), autocommit=True))
+        holder.execute("SELECT pg_advisory_lock(%s)", [publish.PUBLISH_LOCK_KEY])
 
-        def slow_notify(cursor: CursorWrapper, event_id: int, topic: str) -> None:
-            if not first_holds_the_lock.is_set():
-                first_holds_the_lock.set()
-                threading.Event().wait(0.5)
-            original_notify(cursor, event_id, topic)
-
-        def send(text: str) -> None:
-            publish.broadcast("public:news", text)
+        def send() -> None:
+            publish.broadcast("public:news", "published")
             connection.close()
 
-        with mock.patch.object(publish, "_notify", slow_notify):
-            first = threading.Thread(target=send, args=("first",))
-            first.start()
-            first_holds_the_lock.wait(5)
-            second = threading.Thread(target=send, args=("second",))
-            second.start()
-            first.join()
-            second.join()
-
-        received = notified_ids(conn, 2)
-        self.assertEqual(received, sorted(received))
+        sender = threading.Thread(target=send)
+        sender.start()
+        self.wait_for_a_lock_waiter(holder)
+        table = sql.Identifier(StreamEvent._meta.db_table)
+        insert = sql.SQL("INSERT INTO {} (topic, event, html, created) VALUES ('public:news', '', 'direct', now())")
+        holder.execute(insert.format(table))
+        holder.execute("SELECT pg_advisory_unlock(%s)", [publish.PUBLISH_LOCK_KEY])
+        sender.join(5)
+        self.assertFalse(sender.is_alive())
         ids = dict(StreamEvent.objects.values_list("html", "id"))
-        self.assertLess(ids["first"], ids["second"])
+        self.assertLess(ids["direct"], ids["published"])
+
+    def wait_for_a_lock_waiter(self, conn: psycopg.Connection[tuple[Any, ...]]) -> None:
+        # An advisory lock on a bigint key splits it into classid (high half) and objid (low half).
+        key = publish.PUBLISH_LOCK_KEY & 0xFFFFFFFFFFFFFFFF
+        query = """
+            SELECT 1 FROM pg_locks JOIN pg_database ON pg_database.oid = pg_locks.database
+            WHERE locktype = 'advisory' AND NOT granted AND datname = current_database()
+            AND classid::bigint = %s AND objid::bigint = %s
+        """
+        for _ in range(100):
+            if conn.execute(query, [key >> 32, key & 0xFFFFFFFF]).fetchone():
+                return
+            threading.Event().wait(0.05)
+        self.fail("broadcast() did not wait for the advisory lock.")

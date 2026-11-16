@@ -1,14 +1,15 @@
 """Sending events: broadcast() and close_streams()."""
 
+import contextlib
+import functools
 from typing import Any
 
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.sessions.backends.base import SessionBase
 from django.db import connection, transaction
-from django.db.backends.utils import CursorWrapper
 from django.http import HttpRequest
 
-from django_eventstream_pg.messages import CHANNEL, LINE_BREAK, RESERVED_PREFIX, Owner, notify_payload
+from django_eventstream_pg.messages import CHANNEL, LINE_BREAK, RESERVED_PREFIX, Owner
 from django_eventstream_pg.models import StreamEvent
 
 # Serialises event writers, so ids become visible in the order they are assigned.
@@ -40,14 +41,32 @@ def _broadcast(topic: str, html: str, event: str = "") -> None:
 
 
 def _publish(topic: str, html: str, event: str) -> None:
-    with transaction.atomic(), connection.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [PUBLISH_LOCK_KEY])
-        stored = StreamEvent.objects.create(topic=topic, event=event, html=html)
-        _notify(cursor, stored.id, topic)
+    # on_commit runs this in autocommit. Inside an outer transaction, a savepoint keeps a
+    # failed statement from aborting that transaction.
+    savepoint = transaction.atomic() if connection.in_atomic_block else contextlib.nullcontext()
+    with savepoint, connection.cursor() as cursor:
+        cursor.execute(_publish_sql(), [PUBLISH_LOCK_KEY, topic, event, html, CHANNEL])
 
 
-def _notify(cursor: CursorWrapper, event_id: int, topic: str) -> None:
-    cursor.execute("SELECT pg_notify(%s, %s)", [CHANNEL, notify_payload(event_id, topic)])
+@functools.cache
+def _publish_sql() -> str:
+    """One statement: lock, store and notify.
+
+    The INSERT reads from `locked`, so the event takes its id under the lock.
+    The statement's transaction holds the lock until it commits.
+    clock_timestamp() runs under the lock, unlike now(), which is read when the transaction starts.
+    The payload matches notify_payload().
+    """
+    table = connection.ops.quote_name(StreamEvent._meta.db_table)
+    return f"""
+        WITH locked AS (SELECT pg_advisory_xact_lock(%s)),
+        stored AS (
+            INSERT INTO {table} (topic, event, html, created)
+            SELECT %s, %s, %s, clock_timestamp() FROM locked
+            RETURNING id, topic
+        )
+        SELECT pg_notify(%s, id || ':' || topic) FROM stored
+    """
 
 
 def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase | None = None) -> None:

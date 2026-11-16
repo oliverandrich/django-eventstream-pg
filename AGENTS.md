@@ -27,6 +27,8 @@ src/django_eventstream_pg/
 
 - `broadcast()` writes after the commit, in a short transaction holding an advisory lock.
   Event ids therefore become visible in order. Replay after `Last-Event-ID` depends on it.
+- `_publish()` runs one statement: it takes the lock, stores the event and sends the NOTIFY.
+  The INSERT reads from the lock's CTE, so the event takes its id under the lock.
 - Topics starting with `_` are reserved. The view refuses them before `CAN_SUBSCRIBE` runs,
   and `broadcast()` raises `ValueError`. Package code writes them through `_broadcast()`.
 - `close_streams()` stores an event on each close topic of the owner, `_close:<kind>:<sha256>`.

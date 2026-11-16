@@ -97,6 +97,7 @@ def format_event(event: Message, event_id: str) -> str:
 def notify_payload(event_id: int, topic: str) -> str:
     # NOTIFY payloads are limited to 8000 bytes, so the html stays in the table.
     # The topic lets a process without subscribers skip loading the event.
+    # publish._publish_sql() builds the same payload in SQL.
     return f"{event_id}:{topic}"
 
 
