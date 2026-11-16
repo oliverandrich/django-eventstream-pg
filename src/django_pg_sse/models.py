@@ -12,7 +12,7 @@ class StreamEvent(models.Model):
     id: models.BigAutoField[int, int] = models.BigAutoField(primary_key=True)
     topic: models.CharField[str, str] = models.CharField(max_length=200)
     event: models.CharField[str, str] = models.CharField(max_length=100, blank=True)
-    html: models.TextField[str, str] = models.TextField()
+    data: models.TextField[str, str] = models.TextField()
     created: models.DateTimeField[datetime, datetime] = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

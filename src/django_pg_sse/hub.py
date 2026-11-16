@@ -278,7 +278,7 @@ def _table() -> sql.Identifier:
 
 def _select(condition: str) -> sql.Composed:
     # condition is a literal from this package, never user input.
-    query = "SELECT id, topic, event, html FROM {} " + condition
+    query = "SELECT id, topic, event, data FROM {} " + condition
     return sql.SQL(query).format(_table())  # pyright: ignore[reportArgumentType]
 
 

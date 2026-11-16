@@ -17,35 +17,35 @@ from django_pg_sse.models import StreamEvent
 PUBLISH_LOCK_KEY = int.from_bytes(b"sse-emit", signed=True)
 
 
-def broadcast(topic: str, html: str, event: str = "") -> None:
-    """Send `html` to every stream subscribed to `topic`, once the current transaction commits.
+def broadcast(topic: str, data: str, event: str = "") -> None:
+    """Send `data` to every stream subscribed to `topic`, once the current transaction commits.
 
-    A rollback sends nothing. With a name in `event`, htmx dispatches a DOM event instead of
-    swapping the html.
+    A rollback sends nothing. htmx swaps `data` as HTML. With a name in `event`, htmx dispatches
+    a DOM event of that name instead, and `data` may be any text.
     """
     if topic.startswith(RESERVED_PREFIX):
         raise ValueError(f"Topics starting with {RESERVED_PREFIX!r} are reserved.")
     if LINE_BREAK.search(event):
         raise ValueError("An SSE event name cannot contain a line break.")
-    _broadcast(topic, html, event)
+    _broadcast(topic, data, event)
 
 
-def _broadcast(topic: str, html: str, event: str = "") -> None:
+def _broadcast(topic: str, data: str, event: str = "") -> None:
     # A function, not functools.partial: Django before 6.1 logs a robust callback's failure
     # through its __qualname__, which partial objects lack.
     def publish() -> None:
-        _publish(topic, html, event)
+        _publish(topic, data, event)
 
     # robust: the caller's transaction has committed, so a failure here is logged, not raised.
     transaction.on_commit(publish, robust=True)
 
 
-def _publish(topic: str, html: str, event: str) -> None:
+def _publish(topic: str, data: str, event: str) -> None:
     # on_commit runs this in autocommit. Inside an outer transaction, a savepoint keeps a
     # failed statement from aborting that transaction.
     savepoint = transaction.atomic() if connection.in_atomic_block else contextlib.nullcontext()
     with savepoint, connection.cursor() as cursor:
-        cursor.execute(_publish_sql(), [PUBLISH_LOCK_KEY, topic, event, html, CHANNEL])
+        cursor.execute(_publish_sql(), [PUBLISH_LOCK_KEY, topic, event, data, CHANNEL])
 
 
 @functools.cache
@@ -61,7 +61,7 @@ def _publish_sql() -> str:
     return f"""
         WITH locked AS (SELECT pg_advisory_xact_lock(%s)),
         stored AS (
-            INSERT INTO {table} (topic, event, html, created)
+            INSERT INTO {table} (topic, event, data, created)
             SELECT %s, %s, %s, clock_timestamp() FROM locked
             RETURNING id, topic
         )

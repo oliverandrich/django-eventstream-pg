@@ -205,17 +205,17 @@ class StreamTest(StreamTestCase):
 
     @stops_the_hub
     async def test_last_event_id_replays_missed_events(self):
-        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
-        missed = await StreamEvent.objects.acreate(topic="public:news", html="missed")
-        await StreamEvent.objects.acreate(topic="public:other", html="elsewhere")
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        missed = await StreamEvent.objects.acreate(topic="public:news", data="missed")
+        await StreamEvent.objects.acreate(topic="public:other", data="elsewhere")
         stream = await self.open_stream("public:news", headers={"Last-Event-ID": signed(seen.id, "public:news")})
         self.assertEqual(await self.next_message(stream), f"id: {signed(missed.id, 'public:news')}\ndata: missed\n\n")
 
     @stops_the_hub
     async def test_an_unsigned_last_event_id_replays_nothing(self):
         # Otherwise a client could pick any id and read the whole retention of a topic.
-        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
-        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        await StreamEvent.objects.acreate(topic="public:news", data="missed")
         stream = await self.open_stream("public:news", headers={"Last-Event-ID": str(seen.id)})
         await sync_to_async(publish.broadcast)("public:news", "<p>live</p>")
         self.assertIn("<p>live</p>", await self.next_message(stream))
@@ -226,7 +226,7 @@ class StreamTest(StreamTestCase):
         await sync_to_async(publish.broadcast)("public:news", "<p>seen</p>")
         received = await self.next_message(stream)
         last_event_id = received.split("\n", 1)[0].removeprefix("id: ")
-        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        await StreamEvent.objects.acreate(topic="public:news", data="missed")
         resumed = await self.open_stream("public:news", headers={"Last-Event-ID": last_event_id})
         self.assertIn("missed", await self.next_message(resumed))
 
@@ -241,9 +241,9 @@ class StreamTest(StreamTestCase):
     @stops_the_hub
     async def test_a_long_replay_ends_the_stream_after_one_batch(self):
         # htmx reconnects with the last id it got, so the next batch follows.
-        first = await StreamEvent.objects.acreate(topic="public:news", html="one")
-        await StreamEvent.objects.acreate(topic="public:news", html="two")
-        await StreamEvent.objects.acreate(topic="public:news", html="three")
+        first = await StreamEvent.objects.acreate(topic="public:news", data="one")
+        await StreamEvent.objects.acreate(topic="public:news", data="two")
+        await StreamEvent.objects.acreate(topic="public:news", data="three")
         with mock.patch.object(hub_module, "REPLAY_BATCH", 1):
             headers = {"Last-Event-ID": signed(first.id, "public:news")}
             stream = await self.open_stream("public:news", headers=headers)
@@ -302,8 +302,8 @@ class CloseStreamsTest(StreamTestCase):
     async def test_an_id_signed_for_another_owner_replays_nothing(self):
         user = await User.objects.acreate_user("ada")
         client = await self.logged_in_client(user)
-        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
-        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        await StreamEvent.objects.acreate(topic="public:news", data="missed")
         headers = {"Last-Event-ID": signed(seen.id, "public:news")}
         stream = await self.open_stream("public:news", client=client, headers=headers)
         await sync_to_async(publish.broadcast)("public:news", "<p>live</p>")
@@ -315,9 +315,9 @@ class CloseStreamsTest(StreamTestCase):
         user = await User.objects.acreate_user("ada")
         client = await self.logged_in_client(user)
         topic = f"user:{user.pk}"
-        seen = await StreamEvent.objects.acreate(topic=topic, html="seen")
+        seen = await StreamEvent.objects.acreate(topic=topic, data="seen")
         await sync_to_async(publish.close_streams)(user=user)
-        await StreamEvent.objects.acreate(topic=topic, html="while revoked")
+        await StreamEvent.objects.acreate(topic=topic, data="while revoked")
         headers = {"Last-Event-ID": await self.signed_for(client, user, seen.id, topic)}
         stream = await self.open_stream(topic, client=client, headers=headers)
         await sync_to_async(publish.broadcast)(topic, "<p>live</p>")
@@ -327,8 +327,8 @@ class CloseStreamsTest(StreamTestCase):
     async def test_an_authenticated_stream_resumes_its_own_id(self):
         user = await User.objects.acreate_user("ada")
         client = await self.logged_in_client(user)
-        seen = await StreamEvent.objects.acreate(topic="public:news", html="seen")
-        await StreamEvent.objects.acreate(topic="public:news", html="missed")
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        await StreamEvent.objects.acreate(topic="public:news", data="missed")
         headers = {"Last-Event-ID": await self.signed_for(client, user, seen.id, "public:news")}
         stream = await self.open_stream("public:news", client=client, headers=headers)
         self.assertIn("missed", await self.next_message(stream))
@@ -419,7 +419,7 @@ class ReceiveTest(SimpleTestCase):
         with mock.patch.object(hub, "_listen", mock.AsyncMock()):
             queue = hub.subscribe(["public:news"], messages.Owner(()))
         one, three = messages.Message(1, "public:news", "", "one"), messages.Message(3, "public:news", "", "three")
-        rows = [(one.id, one.topic, one.event, one.html), (three.id, three.topic, three.event, three.html)]
+        rows = [(one.id, one.topic, one.event, one.data), (three.id, three.topic, three.event, three.data)]
         with mock.patch.object(hub.live, "fetch", mock.AsyncMock(return_value=rows)) as fetch:
             # The unread id 2 lies between the two; last_id must not pass 3 before it is delivered.
             await hub._receive(["1:public:news", "2:public:other", "3:public:news"])  # pyright: ignore[reportPrivateUsage]

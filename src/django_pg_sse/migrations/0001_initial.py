@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(primary_key=True, serialize=False)),
                 ('topic', models.CharField(max_length=200)),
                 ('event', models.CharField(blank=True, max_length=100)),
-                ('html', models.TextField()),
+                ('data', models.TextField()),
                 ('created', models.DateTimeField(auto_now_add=True, db_index=True)),
             ],
             options={

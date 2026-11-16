@@ -29,13 +29,13 @@ class Message:
     id: int
     topic: str
     event: str
-    html: str
+    data: str
 
     @cached_property
     def body(self) -> str:
         """The SSE message without its id line, formatted once for every stream."""
         lines = [f"event: {self.event}"] if self.event else []
-        lines += [f"data: {line}" for line in LINE_BREAK.split(self.html)]
+        lines += [f"data: {line}" for line in LINE_BREAK.split(self.data)]
         return "\n".join(lines) + "\n\n"
 
 
@@ -95,7 +95,7 @@ def format_event(event: Message, event_id: str) -> str:
 
 
 def notify_payload(event_id: int, topic: str) -> str:
-    # NOTIFY payloads are limited to 8000 bytes, so the html stays in the table.
+    # NOTIFY payloads are limited to 8000 bytes, so the data stays in the table.
     # The topic lets a process without subscribers skip loading the event.
     # publish._publish_sql() builds the same payload in SQL.
     return f"{event_id}:{topic}"

@@ -9,7 +9,7 @@ from django_pg_sse.models import StreamEvent
 
 
 def make_event(*, age: timedelta) -> StreamEvent:
-    event = StreamEvent.objects.create(topic="public:news", html="<p>x</p>")
+    event = StreamEvent.objects.create(topic="public:news", data="<p>x</p>")
     StreamEvent.objects.filter(pk=event.pk).update(created=timezone.now() - age)
     return event
 

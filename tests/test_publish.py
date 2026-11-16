@@ -102,7 +102,7 @@ class CloseEventTest(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             publish.close_streams(session=session)
         close = StreamEvent.objects.get()
-        self.assertNotIn(session.session_key, close.topic + close.html)
+        self.assertNotIn(session.session_key, close.topic + close.data)
 
 
 class BroadcastTest(TestCase):
@@ -112,7 +112,7 @@ class BroadcastTest(TestCase):
             self.assertFalse(StreamEvent.objects.exists())
         self.assertEqual(len(callbacks), 1)
         event = StreamEvent.objects.get()
-        self.assertEqual((event.topic, event.html, event.event), ("public:news", "<p>hi</p>", ""))
+        self.assertEqual((event.topic, event.data, event.event), ("public:news", "<p>hi</p>", ""))
 
     def test_a_failed_publish_is_logged_not_raised(self):
         # The caller's transaction has committed; a 500 would invite a duplicate retry.
@@ -157,12 +157,12 @@ class NotifyTest(TransactionTestCase):
         sender.start()
         self.wait_for_a_lock_waiter(holder)
         table = sql.Identifier(StreamEvent._meta.db_table)
-        insert = sql.SQL("INSERT INTO {} (topic, event, html, created) VALUES ('public:news', '', 'direct', now())")
+        insert = sql.SQL("INSERT INTO {} (topic, event, data, created) VALUES ('public:news', '', 'direct', now())")
         holder.execute(insert.format(table))
         holder.execute("SELECT pg_advisory_unlock(%s)", [publish.PUBLISH_LOCK_KEY])
         sender.join(5)
         self.assertFalse(sender.is_alive())
-        ids = dict(StreamEvent.objects.values_list("html", "id"))
+        ids = dict(StreamEvent.objects.values_list("data", "id"))
         self.assertLess(ids["direct"], ids["published"])
 
     def wait_for_a_lock_waiter(self, conn: psycopg.Connection[tuple[Any, ...]]) -> None:
