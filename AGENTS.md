@@ -19,7 +19,7 @@ src/django_pg_sse/
 ├── signals.py       # stream_opened, stream_closed and their StreamInfo
 ├── permissions.py   # the default can_subscribe() policy
 ├── conf.py          # the PG_SSE setting and its defaults
-├── checks.py        # system check: the default database must be PostgreSQL
+├── checks.py        # system checks: PostgreSQL, STREAM_CONNECTIONS, RETENTION_HOURS, middleware
 ├── models.py        # StreamEvent, the stored events
 └── management/commands/prune_stream_events.py
 ```

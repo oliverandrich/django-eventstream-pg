@@ -197,6 +197,44 @@ class StreamTest(StreamTestCase):
             await hub_connection.close()
 
     @stops_the_hub
+    async def test_an_id_beyond_the_newest_event_resumes_nothing(self):
+        # After a database restore or a sequence reset, new events have smaller ids than the browser's.
+        stream = await self.open_stream("public:news", headers={"Last-Event-ID": signed(10**9, "public:news")})
+        await sync_to_async(publish.broadcast)("public:news", "<p>new</p>")
+        self.assertIn("<p>new</p>", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_an_id_this_worker_has_not_seen_yet_still_resumes(self):
+        # Another worker sent the id; this worker's listener has not read its NOTIFY yet.
+        await self.open_stream("public:news")
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        await StreamEvent.objects.acreate(topic="public:news", data="missed")
+        hub = hub_module.get_hub()
+        assert hub.last_id is not None and hub.last_id < seen.id
+        stream = await self.open_stream("public:news", headers={"Last-Event-ID": signed(seen.id, "public:news")})
+        self.assertIn("missed", await self.next_message(stream))
+
+    async def test_catch_up_follows_a_table_that_restarted_its_ids(self):
+        # A database restore leaves last_id beyond every stored id; _deliver would drop new events.
+        event = await StreamEvent.objects.acreate(topic="public:news", data="after restore")
+        hub = hub_module.Hub()
+        hub.last_id = event.id + 1000
+        try:
+            await hub._catch_up()  # pyright: ignore[reportPrivateUsage]
+        finally:
+            await hub.stop()
+        self.assertEqual(hub.last_id, event.id)
+
+    @stops_the_hub
+    async def test_a_request_without_a_session_opens_a_stream(self):
+        # Token authentication sets request.user but no session.
+        user = await User.objects.acreate_user("ada")
+        request = RequestFactory().get(f"/events/?topic=user:{user.pk}")
+        request.user = user
+        response = await views.stream(request)
+        self.assertEqual(await asyncio.wait_for(anext(content_of(response)), 5), messages.CONNECTED.encode())
+
+    @stops_the_hub
     async def test_delivers_a_broadcast_to_the_open_stream(self):
         stream = await self.open_stream("public:news")
         await sync_to_async(publish.broadcast)("public:news", "<p>hi</p>")

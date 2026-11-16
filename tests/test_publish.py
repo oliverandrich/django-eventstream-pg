@@ -2,6 +2,7 @@ import threading
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from unittest import mock
 
 import psycopg
 from django.contrib.sessions.backends.db import SessionStore
@@ -124,6 +125,15 @@ class BroadcastTest(TestCase):
         expected = '{"at":"2026-11-16T12:00:00Z","price":"1.50","online":12}'
         self.assertEqual((event.event, event.data), ("presence", expected))
 
+    def test_a_too_long_topic_or_event_name_is_refused_before_commit(self):
+        with self.assertRaises(ValueError):
+            publish.broadcast("public:" + "x" * 200, "<p>hi</p>")
+        with self.assertRaises(ValueError):
+            publish.broadcast("public:news", "<p>hi</p>", event="e" * 101)
+        with self.captureOnCommitCallbacks(execute=True):
+            publish.broadcast("p:" + "x" * 198, "<p>hi</p>", event="e" * 100)
+        self.assertTrue(StreamEvent.objects.exists())
+
     def test_broadcast_json_needs_an_event_name(self):
         # htmx swaps a message without an event name as HTML.
         with self.assertRaises(ValueError):
@@ -143,8 +153,10 @@ class BroadcastTest(TestCase):
     def test_a_failed_publish_is_logged_not_raised(self):
         # The caller's transaction has committed; a 500 would invite a duplicate retry.
         # Production logs to django.db.backends.base; captureOnCommitCallbacks to django.test.
-        with self.assertLogs("django", "ERROR"), self.captureOnCommitCallbacks(execute=True):
-            publish.broadcast("public:" + "x" * 300, "<p>hi</p>")
+        # The statement fails on the server, which aborts the transaction it runs in.
+        failing = mock.patch.object(publish, "_publish_sql", return_value="SELECT %s, %s, %s, %s, %s, 1/0")
+        with failing, self.assertLogs("django", "ERROR"), self.captureOnCommitCallbacks(execute=True):
+            publish.broadcast("public:news", "<p>hi</p>")
         # A savepoint keeps the failure from aborting the surrounding transaction.
         self.assertFalse(StreamEvent.objects.exists())
 

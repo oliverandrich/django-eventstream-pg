@@ -1,7 +1,7 @@
 from datetime import timedelta
 from io import StringIO
 
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -23,6 +23,13 @@ class PruneStreamEventsTest(TestCase):
         remaining = set(StreamEvent.objects.values_list("id", flat=True))
         self.assertEqual(remaining, {recent.id})
         self.assertNotIn(old.id, remaining)
+
+    def test_hours_must_be_positive(self):
+        make_event(age=timedelta(hours=1))
+        for hours in ("0", "-1"):
+            with self.assertRaises(CommandError, msg=hours):
+                call_command("prune_stream_events", "--hours", hours, stdout=StringIO())
+        self.assertTrue(StreamEvent.objects.exists())
 
     def test_hours_option_overrides_the_setting(self):
         make_event(age=timedelta(hours=3))

@@ -75,7 +75,10 @@ def _authorize(
     # Anonymous streams have no close topics: close_streams() needs a user or a session login.
     user_pk = session = None
     if request.user.is_authenticated:
-        user_pk, session_key = str(request.user.pk), request.session.session_key
+        # Token authentication sets request.user without a session.
+        request_session = getattr(request, "session", None)
+        session_key = request_session.session_key if request_session is not None else None
+        user_pk = str(request.user.pk)
         owner = Owner.of(user=user_pk, session=session_key)
         session = digest(session_key) if session_key is not None else None
         authorized_at = known or 0
@@ -97,10 +100,15 @@ async def _messages(  # noqa: PLR0913
     # Subscribed here, not in the view: a generator that never starts skips its finally.
     topics = list(info.topics)
     queue = hub.subscribe(topics, owner)
-    sent = last_event_id or 0
+    sent = 0
     opened = False
     try:
         await hub.ready.wait()
+        # After a database restore, the browser's id can lie beyond the newest event.
+        # An id this worker has not seen yet may come from another worker, so the table decides.
+        if last_event_id is not None and last_event_id > (hub.last_id or 0) and last_event_id > await hub.newest():
+            last_event_id = None
+        sent = last_event_id or 0
         # Set first: a disconnect during the receivers must still send stream_closed.
         opened = True
         await _send(stream_opened, info)

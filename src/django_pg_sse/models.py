@@ -5,13 +5,16 @@ from datetime import datetime
 
 from django.db import models
 
+TOPIC_MAX_LENGTH = 200
+EVENT_MAX_LENGTH = 100
+
 
 class StreamEvent(models.Model):
     """A server-sent event, kept for replay after a reconnect."""
 
     id: models.BigAutoField[int, int] = models.BigAutoField(primary_key=True)
-    topic: models.CharField[str, str] = models.CharField(max_length=200)
-    event: models.CharField[str, str] = models.CharField(max_length=100, blank=True)
+    topic: models.CharField[str, str] = models.CharField(max_length=TOPIC_MAX_LENGTH)
+    event: models.CharField[str, str] = models.CharField(max_length=EVENT_MAX_LENGTH, blank=True)
     data: models.TextField[str, str] = models.TextField()
     created: models.DateTimeField[datetime, datetime] = models.DateTimeField(auto_now_add=True, db_index=True)
 

@@ -14,7 +14,7 @@ from django.http import HttpRequest
 from django.utils.asyncio import async_unsafe
 
 from django_pg_sse.messages import CHANNEL, LINE_BREAK, RESERVED_EVENTS, RESERVED_PREFIX, Owner
-from django_pg_sse.models import StreamEvent
+from django_pg_sse.models import EVENT_MAX_LENGTH, TOPIC_MAX_LENGTH, StreamEvent
 
 # Serialises event writers, so ids become visible in the order they are assigned.
 # Replay after Last-Event-ID would skip an event whose smaller id committed late.
@@ -32,6 +32,9 @@ def broadcast(topic: str, data: str, event: str = "") -> None:
     """
     if topic.startswith(RESERVED_PREFIX):
         raise ValueError(f"Topics starting with {RESERVED_PREFIX!r} are reserved.")
+    # The database would refuse a longer value after the commit, where it is only logged.
+    _check_length("topic", topic, TOPIC_MAX_LENGTH)
+    _check_length("event name", event, EVENT_MAX_LENGTH)
     if LINE_BREAK.search(event):
         raise ValueError("An SSE event name cannot contain a line break.")
     if event in RESERVED_EVENTS:
@@ -51,6 +54,11 @@ def broadcast_json(topic: str, value: Any, *, event: str) -> None:
     # allow_nan=False: JSON.parse() in the browser rejects NaN and Infinity.
     data = json.dumps(value, cls=DjangoJSONEncoder, separators=(",", ":"), allow_nan=False)
     broadcast(topic, data, event)
+
+
+def _check_length(name: str, value: str, limit: int) -> None:
+    if len(value) > limit:
+        raise ValueError(f"An SSE {name} has at most {limit} characters, not {len(value)}.")
 
 
 def _broadcast(topic: str, data: str, event: str = "") -> None:

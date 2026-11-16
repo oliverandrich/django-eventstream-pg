@@ -8,7 +8,9 @@ Built for [htmx 4](https://four.htmx.org) and its `hx-sse` extension, but any SS
 ## Requirements
 
 - Python 3.12 or newer, Django 5.2 or newer
-- PostgreSQL and psycopg 3
+- PostgreSQL and psycopg 3.3.9 or newer
+- Middleware that sets `request.user`, such as `AuthenticationMiddleware`; the check `pg_sse.W001` warns without it.
+  A session is optional: without one, `close_streams(session=...)` reaches no stream.
 - An ASGI server such as granian, uvicorn or daphne. `runserver` speaks WSGI and cannot stream an
   async response.
 
@@ -38,7 +40,8 @@ Run `manage.py migrate` to create the event table.
 ## Usage
 
 Send HTML to a topic. The event goes out when the current transaction commits; a rollback sends
-nothing.
+nothing. A topic has at most 200 characters and an event name at most 100; `broadcast()` raises
+`ValueError` for longer ones.
 
 ```python
 from django_pg_sse import broadcast

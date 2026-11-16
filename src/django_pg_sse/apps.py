@@ -9,10 +9,15 @@ class PgSseConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self) -> None:
-        from django_pg_sse.checks import check_postgresql, check_stream_connections
+        from django_pg_sse.checks import (
+            check_middleware,
+            check_postgresql,
+            check_retention_hours,
+            check_stream_connections,
+        )
 
-        checks.register(check_postgresql)
-        checks.register(check_stream_connections)
+        for check in (check_postgresql, check_stream_connections, check_retention_hours, check_middleware):
+            checks.register(check)
         if apps.is_installed("django.contrib.auth"):
             from django.contrib.auth.signals import user_logged_out
 

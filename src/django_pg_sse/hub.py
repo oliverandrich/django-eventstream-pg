@@ -183,9 +183,12 @@ class Hub:
         """Up to REPLAY_BATCH events of `topics` after `after_id`, oldest first."""
         return await _replay(self.streams, topics, after_id)
 
+    async def newest(self) -> int:
+        """The newest stored id, read on the connections of opening streams."""
+        return await _newest(self.streams)
+
     async def _newest(self) -> int:
-        rows = await self.live.fetch(sql.SQL("SELECT coalesce(max(id), 0) FROM {}").format(_table()), [])
-        return rows[0][0]
+        return await _newest(self.live)
 
     async def any_since(self, topics: list[str], after_id: int) -> bool:
         """Whether one of `topics` has an event after `after_id`."""
@@ -263,6 +266,10 @@ class Hub:
     async def _catch_up(self) -> None:
         # LISTEN is active now, so events committed while it was not are in the table up to newest.
         newest = await self._newest()
+        if self.last_id is not None and newest < self.last_id:
+            # A database restore left last_id beyond every stored id; _deliver would drop new events.
+            logger.warning("The newest event id fell from %s to %s; following the table.", self.last_id, newest)
+            self.last_id = newest
         while self.queues and (after := self.last_id or 0) < newest:
             messages = await _replay(self.live, list(self.queues), after, newest)
             for message in messages:
@@ -303,6 +310,11 @@ async def _replay(
     query = _select("WHERE topic = ANY(%s) AND id > %s AND (%s::bigint IS NULL OR id <= %s) ORDER BY id LIMIT %s")
     rows = await connection.fetch(query, [topics, after_id, up_to, up_to, REPLAY_BATCH])
     return [Message(*row) for row in rows]
+
+
+async def _newest(connection: _Connection | _Pool) -> int:
+    rows = await connection.fetch(sql.SQL("SELECT coalesce(max(id), 0) FROM {}").format(_table()), [])
+    return rows[0][0]
 
 
 async def _fetch(conn: Connection, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:

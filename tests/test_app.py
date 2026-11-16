@@ -1,5 +1,6 @@
 from unittest import mock
 
+from django.conf import settings
 from django.core.management import call_command
 from django.db import connections
 from django.http import HttpRequest
@@ -41,6 +42,21 @@ class CheckTest(SimpleTestCase):
                 errors = checks.check_stream_connections(None)
             self.assertEqual([error.id for error in errors], ["pg_sse.E002"], value)
         self.assertEqual(checks.check_stream_connections(None), [])
+
+    def test_retention_hours_must_be_a_positive_integer(self):
+        # A negative retention puts the cutoff in the future, and pruning deletes current events.
+        for value in (0, -1, "24"):
+            with override_settings(PG_SSE={"RETENTION_HOURS": value}):
+                errors = checks.check_retention_hours(None)
+            self.assertEqual([error.id for error in errors], ["pg_sse.E003"], value)
+        self.assertEqual(checks.check_retention_hours(None), [])
+
+    def test_a_missing_authentication_middleware_is_a_warning(self):
+        middleware = [m for m in settings.MIDDLEWARE if not m.endswith("AuthenticationMiddleware")]
+        with override_settings(MIDDLEWARE=middleware):
+            warnings = checks.check_middleware(None)
+        self.assertEqual([warning.id for warning in warnings], ["pg_sse.W001"])
+        self.assertEqual(checks.check_middleware(None), [])
 
 
 class MigrationsTest(TestCase):
