@@ -1,31 +1,257 @@
 # Deployment
 
-## Server
+## Overview
 
-Streams need an ASGI server, such as granian, uvicorn or daphne.
+```text
+ sending processes                          ASGI workers
+ (views, tasks, shell)                      (one hub per worker)
+
+ broadcast()                                hub ──► open streams
+     │ after commit                          ▲  │
+     ▼                                       │  │
+ ┌────────────────────────────────┐  NOTIFY  │  │
+ │ PostgreSQL                     │──────────┘  │ SELECT … WHERE id = ANY
+ │   INSERT the event             │◄────────────┘
+ │   pg_notify('pg_sse', …)       │
+ └────────────────────────────────┘
+```
+
+`broadcast()` stores each event and sends a `NOTIFY` with its id and topic, in one statement.
+An ASGI worker starts one hub with its first stream, and the hub listens on the channel.
+A hub with a stream on that topic loads the event from the table and writes it to its streams.
+A reconnecting browser replays missed events from the table.
+Any process that can write to the database can send; only the ASGI workers serve streams.
+
+## ASGI server
+
+Streams need an ASGI server.
 `manage.py runserver` speaks WSGI and cannot stream an async response.
-Each ASGI worker runs one event loop.
-Each event loop runs one hub, which listens for events.
 
-## Database connections
+Pick one of them.
 
-[Database connections](index.md#database-connections) lists what a worker holds and which `OPTIONS` apply.
-Add up to 2 + `PG_SSE["STREAM_CONNECTIONS"]` per worker to Django's own connections when you size `max_connections`.
-[How it works](index.md#how-it-works) describes how the hub notices a lost connection.
+granian:
 
-## Reverse proxies
+```sh
+granian --interface asginl --workers 4 --workers-kill-timeout 10 \
+    myproject.asgi:application
+```
 
-A stream sends a comment line after 15 quiet seconds, so proxy idle timeouts do not cut it.
-This holds whatever the stream waits for, such as a busy connection pool or a reconnecting hub.
-A stream whose hub has not listened for 60 seconds ends, and the browser reconnects.
+uvicorn:
 
-Caddy 2's `reverse_proxy` flushes `text/event-stream` responses at once, whatever `flush_interval` says.
+```sh
+uvicorn --workers 4 --timeout-graceful-shutdown 10 myproject.asgi:application
+```
+
+daphne:
+
+```sh
+daphne myproject.asgi:application
+```
+
+Each worker process runs one event loop.
+Each event loop runs one hub.
+
+### Shutdown
+
+A healthy stream stays open while its client stays connected.
+granian and uvicorn wait for open responses when they stop, so a single open tab holds a restart.
+Both wait without limit by default.
+Give them a limit:
+
+- granian: `--workers-kill-timeout 10`, or `GRANIAN_WORKERS_KILL_TIMEOUT`.
+- uvicorn: `--timeout-graceful-shutdown 10`.
+
+The browsers reconnect to the new workers and replay what they missed.
+
+granian's `--workers-lifetime` restarts a worker after a set time, which ends the worker's streams.
+
+## Database
+
+### Connections
+
+Each worker holds its own connections to `DATABASES["default"]`, outside Django's connection pool.
+They are one for `LISTEN`, one for live delivery and a pool of up to `PG_SSE["STREAM_CONNECTIONS"]` (default 4).
+An open stream holds no connection from Django's pool.
+
+For 4 workers with the defaults, the hubs hold up to 4 × (2 + 4) = 24 connections.
+Django's own pool adds up to its `max_size` per worker.
+Add both when you set `max_connections`.
+
+[Database connections](index.md#database-connections) lists which settings and `OPTIONS` the hub uses.
+
+### Timeouts
+
+The hub's connections carry these libpq defaults.
+A key in `OPTIONS` replaces its default.
+
+```python
+DATABASES = {
+    "default": {
+        # ...
+        "OPTIONS": {
+            "connect_timeout": 10,  # give up connecting to an unreachable host
+            "keepalives": 1,  # probe an idle connection
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "tcp_user_timeout": 30_000,  # milliseconds; Linux only
+        },
+    },
+}
+```
+
+With `PGCONNECT_TIMEOUT`, `PGSERVICE` or `OPTIONS["service"]`, the hub sets no `connect_timeout`.
+libpq then takes it from the environment or the service file.
+`PG_SSE["QUERY_TIMEOUT"]` (default 30 seconds) limits each query on the live connection and the stream pool.
+The `LISTEN` health check has its own limit of 10 seconds.
+Raise `QUERY_TIMEOUT` for a database that answers slowly under load.
+
+### PgBouncer
+
+`LISTEN` needs a session.
+A PgBouncer in transaction mode cannot carry it, so point `default` straight at PostgreSQL.
+A PgBouncer in session mode keeps one server connection per client connection, so `LISTEN` works.
+
+## Reverse proxy
+
+Each stream sends a comment line after 15 quiet seconds, so proxy idle timeouts do not cut it.
+The stream also sends `X-Accel-Buffering: no` and Django's never-cache headers.
+
+### Caddy
+
+```text
+example.com {
+    encode
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+Caddy's `reverse_proxy` flushes `text/event-stream` responses at once, whatever `flush_interval` says.
 Its `encode` directive streams such responses as they are written, according to the Caddy docs.
-nginx buffers proxied responses by default.
-The stream sends `X-Accel-Buffering: no`, so nginx passes it through without `proxy_buffering off;`.
+
+### nginx
+
+```text
+location /events/ {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+}
+```
+
+nginx honours `X-Accel-Buffering: no`, so the location needs no `proxy_buffering off;`.
+Its default `proxy_read_timeout` of 60 seconds exceeds the 15-second keepalive.
+
+### HTTP/2
+
+Over HTTP/1.1, a browser opens at most six connections to one origin.
+Each tab with a stream holds one of them, so further requests wait once six tabs are open.
+Serve the site over HTTP/2, which carries all requests to an origin on one connection.
+Caddy speaks HTTP/2 over HTTPS by default.
+nginx 1.25.1 and later need `http2 on;` in the `server` block.
+
+## Failures
+
+| What happens | What the browser sees |
+|---|---|
+| A worker restarts | The stream ends. htmx reconnects to another worker and replays what it missed. |
+| The hub loses its `LISTEN` connection | The hub reconnects after 0.5 to 5 seconds and replays what it missed into its open streams. |
+| The `LISTEN` connection goes half-open | After 30 quiet seconds the hub checks it and replaces it about 10 to 20 seconds later. |
+| A hub query hangs | It gives up after `QUERY_TIMEOUT` plus up to 10 seconds. If the server did not answer, the query runs once more on a new connection; otherwise the listener reconnects. |
+| A stream's query fails | The stream ends with an error, which the ASGI server logs, and the browser reconnects. |
+| The hub does not listen for 60 seconds | A new stream ends, and the browser reconnects, perhaps to another worker. |
+| The database comes back with lower ids | The hub follows the table on its next reconnect; a browser's newer id resumes nothing. |
+| A stream's client falls 1000 events behind | The stream ends, and the reconnect replays the dropped events. |
 
 ## Pruning
 
-Every event is stored, so a reconnecting browser can replay what it missed.
-Run `manage.py prune_stream_events` regularly, for example hourly from cron or a task scheduler.
-It deletes events older than `PG_SSE["RETENTION_HOURS"]` (default 24).
+Every event is stored.
+`manage.py prune_stream_events` deletes events older than `PG_SSE["RETENTION_HOURS"]` (default 24).
+Run it regularly, for example hourly.
+
+With cron:
+
+```text
+17 * * * * cd /srv/app && .venv/bin/python manage.py prune_stream_events -v 0
+```
+
+With a systemd timer:
+
+```ini
+# prune-stream-events.service
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/app
+ExecStart=/srv/app/.venv/bin/python manage.py prune_stream_events -v 0
+
+# prune-stream-events.timer
+[Timer]
+OnCalendar=hourly
+
+[Install]
+WantedBy=timers.target
+```
+
+With django-crontask:
+
+```python
+from crontask import cron
+from django.core.management import call_command
+from django.tasks import task
+
+
+@cron("17 * * * *")
+@task
+def prune_stream_events():
+    call_command("prune_stream_events", verbosity=0)
+```
+
+## Monitoring
+
+| Logger | Level | Event |
+|---|---|---|
+| `django_pg_sse.hub` | WARNING | The listener lost its connection and reconnects. |
+| `django_pg_sse.hub` | ERROR | The listener failed for another reason and restarts. |
+| `django_pg_sse.hub` | WARNING | A NOTIFY on the channel had a payload the hub cannot read. |
+| `django_pg_sse.hub` | WARNING | The newest event id fell, such as after a restore. |
+| `django.db.backends.base` | ERROR | Storing an event failed after the commit, and the event is lost. |
+| `django.dispatch` | ERROR | A receiver of `stream_opened` or `stream_closed` raised. |
+
+A failed query of an opening stream ends that stream; the ASGI server logs its traceback.
+
+`manage.py check` runs the system checks `pg_sse.E001` to `pg_sse.E004` and `pg_sse.W001`.
+The signals `stream_opened` and `stream_closed` can count open streams, for example as a gauge:
+
+```python
+from django.dispatch import receiver
+from django_pg_sse.signals import stream_closed, stream_opened
+
+
+@receiver(stream_opened)
+def count_open(sender, stream, **kwargs):
+    open_streams.inc()
+
+
+@receiver(stream_closed)
+def count_closed(sender, stream, **kwargs):
+    open_streams.dec()
+```
+
+A killed process sends no `stream_closed`, so such a gauge drifts until the process restarts.
+
+## Security
+
+`Last-Event-ID` values are signed with `SECRET_KEY`.
+An authenticated stream's ids are signed for its user, its session and its topics.
+An anonymous stream's ids are signed for its topics only.
+A changed `SECRET_KEY` invalidates the ids that browsers hold, and their next reconnect replays nothing.
+With the old key in `SECRET_KEY_FALLBACKS`, those ids keep resuming.
+
+The table stores each event's data as sent, such as HTML with private content.
+`RETENTION_HOURS` therefore also limits how long that content stays in the database.
+Close events store unsalted SHA-256 digests of user primary keys and session keys.
+A session key cannot be read back from its digest.
+An integer primary key can, by hashing every candidate.
+
+Topics starting with `_` belong to the package.
+The stream view refuses them, and `broadcast()` raises `ValueError` for them.

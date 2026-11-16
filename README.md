@@ -1,6 +1,8 @@
 # django-pg-sse
 
-Documentation: <https://django-pg-sse.readthedocs.io/>
+Documentation: <https://django-pg-sse.readthedocs.io/>, with a
+[deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html) and an
+[API reference](https://django-pg-sse.readthedocs.io/en/latest/api.html).
 
 Server-sent events for Django over PostgreSQL `LISTEN`/`NOTIFY`. Push HTML from any process to the
 open browsers of a topic, with replay after a reconnect. No Redis, no message broker.
@@ -175,6 +177,9 @@ A receiver that raises is logged to `django.dispatch`, and the stream goes on.
 
 ## Database connections
 
+The [deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html) covers sizing,
+timeouts, proxies and shutdown in more detail.
+
 The hub's connections use `DATABASES["default"]`, outside Django's connection pool.
 Each ASGI worker holds one for LISTEN, one for live delivery and a pool for opening streams.
 `PG_SSE["STREAM_CONNECTIONS"]` (default 4) caps that pool.
@@ -190,7 +195,7 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - On Linux, `tcp_user_timeout` ends a send or receive that the server leaves unacknowledged for 30 seconds.
   `OPTIONS` overrides these socket options.
 - They give up connecting after 10 seconds.
-  `connect_timeout` in `OPTIONS`, `PGCONNECT_TIMEOUT` or a libpq service file overrides that.
+  `connect_timeout` in `OPTIONS`, `PGCONNECT_TIMEOUT` or a libpq service overrides that.
 
 ## How it works
 
