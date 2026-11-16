@@ -11,5 +11,6 @@
 - **`close_streams(user=..., session=...)`** ends streams after access is taken away; logging out closes the streams of that session.
 - **`stream_opened` and `stream_closed` signals** report the lifecycle of each stream, such as for presence or metrics.
 - **System checks** for PostgreSQL, `STREAM_CONNECTIONS`, `RETENTION_HOURS` and the authentication middleware.
+- **Keepalives** after 15 quiet seconds, also while a stream opens, and the `X-Accel-Buffering: no` header for nginx.
 - **Reserved topics**: the stream view and `broadcast()` refuse topics starting with `_`.
 - **`prune_stream_events`** deletes events older than the retention.

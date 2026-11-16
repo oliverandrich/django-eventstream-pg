@@ -15,8 +15,9 @@ Add up to 2 + `PG_SSE["STREAM_CONNECTIONS"]` per worker to Django's own connecti
 
 ## Reverse proxies
 
-Once connected, a stream sends a comment line every 15 seconds, so proxy idle timeouts do not cut it.
-While the hub reconnects, a newly opened stream sends nothing until the hub listens again.
+A stream sends a comment line after 15 quiet seconds, so proxy idle timeouts do not cut it.
+This holds whatever the stream waits for, such as a busy connection pool or a reconnecting hub.
+A stream whose hub has not listened for 60 seconds ends, and the browser reconnects.
 
 Caddy 2's `reverse_proxy` flushes `text/event-stream` responses at once, whatever `flush_interval` says.
 Its `encode` directive streams such responses as they are written, according to the Caddy docs.

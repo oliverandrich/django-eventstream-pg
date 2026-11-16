@@ -1,8 +1,9 @@
 """The SSE endpoint: one stream per page, for several topics."""
 
 import asyncio
+import contextlib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 
 from asgiref.sync import sync_to_async
 from django.db import connection, transaction
@@ -30,6 +31,8 @@ from django_pg_sse.models import StreamEvent
 from django_pg_sse.signals import StreamInfo, stream_closed, stream_opened
 
 KEEPALIVE_SECONDS = 15
+# A stream whose hub has not listened for this long ends, so the browser reconnects.
+READY_TIMEOUT = 60
 
 
 # Django raises for an async view under ATOMIC_REQUESTS, and a stream cannot hold a transaction.
@@ -51,7 +54,7 @@ async def stream(request: HttpRequest) -> HttpResponseBase:
     owner, authorized_at, ids, info = authorized
     # An unsigned or foreign id resumes nothing; the stream starts with live events.
     last_event_id = ids.unsign(request.headers.get("Last-Event-ID", ""))
-    messages = _messages(hub, owner, authorized_at, ids, last_event_id, info)
+    messages = _with_keepalives(_messages(hub, owner, authorized_at, ids, last_event_id, info))
     response = StreamingHttpResponse(messages, content_type="text/event-stream")
     add_never_cache_headers(response)
     # nginx buffers proxied responses unless the response opts out.
@@ -97,7 +100,7 @@ async def _messages(  # noqa: PLR0913
     ids: EventIds,
     last_event_id: int | None,
     info: StreamInfo,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     await sync_to_async(_close_connection)()
     # Subscribed here, not in the view: a generator that never starts skips its finally.
     topics = list(info.topics)
@@ -105,7 +108,12 @@ async def _messages(  # noqa: PLR0913
     sent = 0
     opened = False
     try:
-        await hub.ready.wait()
+        try:
+            async with asyncio.timeout(READY_TIMEOUT):
+                await hub.ready.wait()
+        except TimeoutError:
+            # The browser reconnects, perhaps to a worker whose listener runs.
+            return
         # After a database restore, the browser's id can lie beyond the newest event.
         # An id this worker has not seen yet may come from another worker, so the table decides.
         if last_event_id is not None and last_event_id > (hub.last_id or 0) and last_event_id > await hub.newest():
@@ -129,11 +137,7 @@ async def _messages(  # noqa: PLR0913
             if len(replayed) == hub_module.REPLAY_BATCH:
                 return
         while True:
-            try:
-                item = await asyncio.wait_for(queue.get(), KEEPALIVE_SECONDS)
-            except TimeoutError:
-                yield KEEPALIVE
-                continue
+            item = await queue.get()
             if item is Signal.OVERFLOW:
                 return
             if item is Signal.REVOKED:
@@ -160,6 +164,34 @@ async def _send(signal: DjangoSignal, info: StreamInfo) -> None:
     await signal.asend_robust(sender=StreamInfo, stream=info)
     # A sync receiver ran in the request's thread and may have opened its connection again.
     await sync_to_async(_close_connection)()
+
+
+async def _with_keepalives(messages: AsyncGenerator[str, None]) -> AsyncIterator[str]:
+    """`messages` with a KEEPALIVE comment after every KEEPALIVE_SECONDS without output.
+
+    A proxy idle timeout would otherwise cut a stream, whatever the stream waits for.
+    """
+    pending: asyncio.Future[str] | None = None
+    try:
+        while True:
+            pending = pending or asyncio.ensure_future(anext(messages))
+            done, _ = await asyncio.wait({pending}, timeout=KEEPALIVE_SECONDS)
+            if not done:
+                yield KEEPALIVE
+                continue
+            finished, pending = pending, None
+            try:
+                item = finished.result()
+            except StopAsyncIteration:
+                return
+            yield item
+    finally:
+        # A disconnect cancels this generator; the pending step then ends with the same cancellation.
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending
+        await messages.aclose()
 
 
 async def _revoked_since(hub: Hub, owner: Owner, event_id: int) -> bool:

@@ -245,6 +245,47 @@ class StreamTest(StreamTestCase):
         await content.aclose()
 
     @stops_the_hub
+    async def test_a_stream_waiting_for_the_listener_sends_keepalives(self):
+        # A proxy idle timeout would otherwise cut a stream that opens while the hub reconnects.
+        hub = hub_module.get_hub()
+        with mock.patch.object(hub, "_listen", mock.AsyncMock()), mock.patch.object(views, "KEEPALIVE_SECONDS", 0.1):
+            stream = content_of(await AsyncClient().get("/events/?topic=public:news"))
+            self.assertEqual(await asyncio.wait_for(anext(stream), 5), messages.KEEPALIVE.encode())
+
+    @stops_the_hub
+    async def test_a_slow_replay_sends_keepalives(self):
+        # A busy pool can hold the opening queries longer than a proxy's idle timeout.
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        await StreamEvent.objects.acreate(topic="public:news", data="missed")
+        hub = hub_module.get_hub()
+        replay = hub.replay
+
+        async def slow_replay(topics: list[str], after_id: int) -> list[messages.Message]:
+            await asyncio.sleep(0.5)
+            return await replay(topics, after_id)
+
+        headers = {"Last-Event-ID": signed(seen.id, "public:news")}
+        with mock.patch.object(hub, "replay", slow_replay), mock.patch.object(views, "KEEPALIVE_SECONDS", 0.1):
+            stream = await self.open_stream("public:news", headers=headers)
+            self.assertEqual(await asyncio.wait_for(anext(stream), 5), messages.KEEPALIVE.encode())
+            self.assertIn("missed", await self.next_message(stream))
+
+    @stops_the_hub
+    async def test_a_stream_whose_listener_never_starts_ends(self):
+        # The browser then reconnects, perhaps to a worker whose listener runs.
+        hub = hub_module.get_hub()
+        patches = (
+            mock.patch.object(hub, "_listen", mock.AsyncMock()),
+            mock.patch.object(views, "KEEPALIVE_SECONDS", 0.1),
+            mock.patch.object(views, "READY_TIMEOUT", 0.3, create=False),
+        )
+        with patches[0], patches[1], patches[2]:
+            stream = content_of(await AsyncClient().get("/events/?topic=public:news"))
+            with self.assertRaises(StopAsyncIteration):
+                while True:
+                    await asyncio.wait_for(anext(stream), 5)
+
+    @stops_the_hub
     async def test_a_quiet_stream_sends_keepalives(self):
         # Proxies close a connection that stays silent; a comment line keeps it open.
         with mock.patch.object(views, "KEEPALIVE_SECONDS", 0.1):

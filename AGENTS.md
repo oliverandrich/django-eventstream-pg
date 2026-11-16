@@ -56,6 +56,8 @@ src/django_pg_sse/
   `server_side_binding`. It also drops Django's `cursor_factory` and `context`.
 - A stream sends event ids signed by `EventIds` for its owner's close topics and its topics.
   Replay needs a validly signed id and no close for the owner after that id.
+- `views._with_keepalives()` wraps `_messages()` and sends a keepalive after `KEEPALIVE_SECONDS` without output.
+  `_messages()` therefore has no keepalive logic of its own; it may wait on anything.
 - `stream_opened` and `stream_closed` come in pairs: `_messages()` sends closed once opened began.
   The closed send runs under `asyncio.shield`, so a second cancellation cannot cut it short.
   Receivers run through `asend_robust()`, so a failing receiver is logged and the stream goes on.
