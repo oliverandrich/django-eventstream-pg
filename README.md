@@ -129,6 +129,31 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
   Only a process with a stream of that owner acts on it, and it needs no query.
 - A close topic holds a SHA-256 digest of the user's primary key or the session key.
 
+## Compared to django-eventstream
+
+[django-eventstream](https://github.com/fanout/django-eventstream) also serves server-sent events
+from Django. It shares no code or API with this package. This comparison refers to its release 5.3.4.
+
+django-pg-sse supports PostgreSQL only and ASGI only. In return it needs no other service.
+
+| | django-pg-sse | django-eventstream |
+|---|---|---|
+| Delivery across processes | PostgreSQL `LISTEN`/`NOTIFY` | Redis pub/sub or a GRIP proxy such as Pushpin; otherwise the sending process only |
+| Sending | After the transaction commits; a rollback sends nothing | At once, without `on_commit` |
+| Storage | Every event | Optional, per channel |
+| Event ids | One sequence, in commit order across all topics | One counter per channel |
+| `Last-Event-ID` | Signed for the user, the session and the topics | Chosen by the client |
+| Revoking access | `close_streams()` for a user or a session, in every process | `channel_permission_changed()` for a user and a channel, in the calling process and at a GRIP proxy |
+| Payload | HTML for htmx, or any text | JSON by default, or any text |
+| Servers | ASGI | ASGI, or WSGI behind a GRIP proxy |
+
+django-eventstream with Pushpin or Fanout holds the open connections outside Django.
+That scales to more concurrent connections than an ASGI worker holds.
+Without such a proxy, both packages hold each open stream in an ASGI worker.
+
+django-pg-sse serialises `broadcast()` through an advisory lock, so the events per second have a
+lower ceiling than with Redis.
+
 ## License
 
 MIT
