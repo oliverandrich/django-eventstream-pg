@@ -18,6 +18,11 @@ def is_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
+def is_positive_number(value: Any) -> bool:
+    """Whether `value` is an int or float above 0, excluding bool."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
+
+
 # Django passes both arguments by keyword, so they keep their names although the checks ignore them.
 def check_postgresql(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
     """pg_sse.E001: the default database must be PostgreSQL."""
@@ -42,6 +47,14 @@ def check_retention_hours(app_configs: Sequence[AppConfig] | None, **kwargs: Any
     """pg_sse.E003: PG_SSE["RETENTION_HOURS"] must be a positive integer."""
     # Zero or a negative value puts the cutoff at or after now, and pruning deletes current events.
     return _positive_int_setting("RETENTION_HOURS", "pg_sse.E003")
+
+
+def check_query_timeout(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
+    """pg_sse.E004: PG_SSE["QUERY_TIMEOUT"] must be a positive number of seconds."""
+    value = conf.get("QUERY_TIMEOUT")
+    if is_positive_number(value):
+        return []
+    return [Error(f'PG_SSE["QUERY_TIMEOUT"] must be a positive number of seconds, not {value!r}.', id="pg_sse.E004")]
 
 
 def check_middleware(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001

@@ -32,6 +32,11 @@ src/django_pg_sse/
 - A LISTEN connection quiet for `HEALTH_SECONDS` must answer `SELECT 1` within `HEALTH_TIMEOUT`.
   Otherwise `_listen()` treats it as lost and reconnects.
   psycopg then waits up to 10 seconds more for the cancelled query before the connection closes.
+- `_within()` turns a timeout into `OperationalError`, so callers treat it like a lost connection.
+  `_fetch()` and `pool.check()` run within `PG_SSE["QUERY_TIMEOUT"]`; `_check()` within `HEALTH_TIMEOUT`.
+  psycopg closes a connection whose server does not answer the cancel, so the retry below applies.
+- `connect_params()` sets keepalives and `tcp_user_timeout` unless `OPTIONS` sets them.
+  It sets `connect_timeout` only without `PGCONNECT_TIMEOUT` and without a libpq `service`.
 - `_Connection.fetch()` and `_Pool.fetch()` retry once when an `OperationalError` closed the connection.
   `_Pool.fetch()` first runs `check()`, which drops every closed idle connection of the pool.
   A failed connect and other errors, such as SQL errors, are not retried.

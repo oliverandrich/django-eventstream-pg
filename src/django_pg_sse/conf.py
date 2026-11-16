@@ -14,6 +14,8 @@ DEFAULTS: dict[str, Any] = {
     "RETENTION_HOURS": 24,
     # Connections per ASGI worker for the replay and revocation queries of opening streams.
     "STREAM_CONNECTIONS": 4,
+    # Seconds after which a query of the hub gives up; a half-open connection would wait minutes.
+    "QUERY_TIMEOUT": 30,
 }
 
 

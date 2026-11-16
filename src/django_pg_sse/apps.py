@@ -16,11 +16,18 @@ class PgSseConfig(AppConfig):
         from django_pg_sse.checks import (
             check_middleware,
             check_postgresql,
+            check_query_timeout,
             check_retention_hours,
             check_stream_connections,
         )
 
-        for check in (check_postgresql, check_stream_connections, check_retention_hours, check_middleware):
+        for check in (
+            check_postgresql,
+            check_stream_connections,
+            check_retention_hours,
+            check_query_timeout,
+            check_middleware,
+        ):
             checks.register(check)
         if apps.is_installed("django.contrib.auth"):
             from django.contrib.auth.signals import user_logged_out

@@ -187,8 +187,10 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - LISTEN needs a session. A PgBouncer in transaction mode cannot carry it.
   With such a PgBouncer, point `default` straight at PostgreSQL.
 - Over TCP, they use libpq keepalives: 30 seconds idle, then 3 probes 10 seconds apart.
-  `keepalives` and its siblings in `OPTIONS` override them.
-- They set no `connect_timeout`. Set one in `OPTIONS`, so a reconnect to an unreachable host gives up.
+- On Linux, `tcp_user_timeout` ends a send or receive that the server leaves unacknowledged for 30 seconds.
+  `OPTIONS` overrides these socket options.
+- They give up connecting after 10 seconds.
+  `connect_timeout` in `OPTIONS`, `PGCONNECT_TIMEOUT` or a libpq service file overrides that.
 
 ## How it works
 
@@ -201,8 +203,9 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - After 30 seconds without a NOTIFY, the listener sends `SELECT 1` and waits up to 10 seconds.
   Without an answer, it reconnects; psycopg can add up to 10 seconds while it cancels the query.
   This replaces a half-open LISTEN connection, such as after a failover, within about a minute.
-- No such check guards a query on the other connections.
-  A query in flight on a half-open connection waits for the operating system's TCP timeout.
+- A query on the other connections gives up after `PG_SSE["QUERY_TIMEOUT"]` (default 30) seconds.
+  psycopg can add up to 10 seconds while it cancels the query.
+  If the server does not answer, the query runs once more on a new connection, with the same limits.
 - A query on a connection that a database restart ended runs once more on a new connection.
 - The view opts out of `ATOMIC_REQUESTS`, which Django does not allow for async views.
 - `close_streams()` stores an event on a close topic of the user or the session.

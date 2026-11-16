@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 import weakref
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -26,8 +27,18 @@ RECONNECT_DELAYS = (0.5, 1, 2, 5)
 # A half-open TCP connection would otherwise wait for events that never come.
 HEALTH_SECONDS = 30
 HEALTH_TIMEOUT = 10
-# libpq TCP keepalives, unless OPTIONS sets them. They also keep NAT entries alive.
-KEEPALIVES = {"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3}
+# libpq socket options, unless OPTIONS sets them.
+# Keepalives detect a silent idle connection and keep NAT entries alive.
+# tcp_user_timeout ends a send or receive the server stops acknowledging; only Linux supports it.
+SOCKET_OPTIONS = {
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+    "tcp_user_timeout": 30_000,
+}
+# Seconds after which libpq gives up connecting to an unreachable host, instead of about two minutes.
+CONNECT_TIMEOUT = 10
 
 type Queue = asyncio.Queue[Message | Signal]
 
@@ -38,7 +49,11 @@ def connect_params() -> dict[str, Any]:
     # Django's sync cursor factory and adapter context do not fit an AsyncConnection.
     params.pop("cursor_factory", None)
     params.pop("context", None)
-    return {**KEEPALIVES, **params}
+    defaults: dict[str, Any] = dict(SOCKET_OPTIONS)
+    # A kwarg would override PGCONNECT_TIMEOUT and a service file's connect_timeout.
+    if "PGCONNECT_TIMEOUT" not in os.environ and "service" not in params:
+        defaults["connect_timeout"] = CONNECT_TIMEOUT
+    return {**defaults, **params}
 
 
 type Connection = psycopg.AsyncConnection[tuple[Any, ...]]
@@ -127,7 +142,9 @@ class _Pool:
                 if not conn.closed:
                     raise
         # A restarted server ends every pooled connection; check() drops the closed idle ones.
-        await (await self._open()).check()
+        # A half-open idle connection would hold check(), so it gets the query timeout too.
+        async with _within(conf.get("QUERY_TIMEOUT"), "The pool check did not finish."):
+            await (await self._open()).check()
         async with self.connection() as conn:
             return await _fetch(conn, query, params)
 
@@ -318,16 +335,25 @@ async def _newest(connection: _Connection | _Pool) -> int:
 
 
 async def _fetch(conn: Connection, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
-    cursor = await conn.execute(query, params)
-    return await cursor.fetchall()
+    # psycopg cancels a timed-out query, and closes the connection if the server does not answer.
+    async with _within(conf.get("QUERY_TIMEOUT"), "The query did not finish in time."):
+        cursor = await conn.execute(query, params)
+        return await cursor.fetchall()
 
 
 async def _check(listening: Connection) -> None:
+    async with _within(HEALTH_TIMEOUT, "The LISTEN connection did not answer SELECT 1."):
+        await listening.execute("SELECT 1")
+
+
+@contextlib.asynccontextmanager
+async def _within(seconds: float, message: str) -> AsyncGenerator[None, None]:
+    # OperationalError, so callers treat a timeout like a lost connection.
     try:
-        async with asyncio.timeout(HEALTH_TIMEOUT):
-            await listening.execute("SELECT 1")
+        async with asyncio.timeout(seconds):
+            yield
     except TimeoutError as error:
-        raise psycopg.OperationalError("The LISTEN connection did not answer SELECT 1.") from error
+        raise psycopg.OperationalError(message) from error
 
 
 def _table() -> sql.Identifier:

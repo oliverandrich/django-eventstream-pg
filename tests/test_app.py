@@ -51,6 +51,15 @@ class CheckTest(SimpleTestCase):
             self.assertEqual([error.id for error in errors], ["pg_sse.E003"], value)
         self.assertEqual(checks.check_retention_hours(None), [])
 
+    def test_query_timeout_must_be_a_positive_number(self):
+        for value in (0, -1, "30", True):
+            with override_settings(PG_SSE={"QUERY_TIMEOUT": value}):
+                errors = checks.check_query_timeout(None)
+            self.assertEqual([error.id for error in errors], ["pg_sse.E004"], value)
+        for value in (0.5, 30):
+            with override_settings(PG_SSE={"QUERY_TIMEOUT": value}):
+                self.assertEqual(checks.check_query_timeout(None), [], value)
+
     def test_a_missing_authentication_middleware_is_a_warning(self):
         middleware = [m for m in settings.MIDDLEWARE if not m.endswith("AuthenticationMiddleware")]
         with override_settings(MIDDLEWARE=middleware):

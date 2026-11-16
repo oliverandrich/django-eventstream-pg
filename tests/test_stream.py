@@ -664,6 +664,99 @@ class HubRobustnessTest(StreamTestCase):
                 await hub_connection.fetch(sql.SQL("SELECT 1"), [])
         connect.assert_called_once()
 
+    @contextlib.asynccontextmanager
+    async def stopped_backend(self, pid: int) -> AsyncGenerator[None, None]:
+        """SIGSTOP keeps the backend's TCP connection open but silent, as after a failover."""
+        if not await asyncio.to_thread(is_local_postgres, pid):
+            self.skipTest("The PostgreSQL server is not a local process.")
+        try:
+            os.kill(pid, signal.SIGSTOP)
+        except (PermissionError, ProcessLookupError):
+            self.skipTest("The PostgreSQL backend cannot be stopped from here.")
+        try:
+            yield
+        finally:
+            os.kill(pid, signal.SIGCONT)
+
+    @override_settings(PG_SSE={"QUERY_TIMEOUT": 0.5})
+    async def test_a_silent_live_connection_gives_up_and_reconnects(self):
+        hub_connection = hub_module._Connection()  # pyright: ignore[reportPrivateUsage]
+        try:
+            ((pid,),) = await hub_connection.fetch(sql.SQL("SELECT pg_backend_pid()"), [])
+            async with self.stopped_backend(pid):
+                rows = await asyncio.wait_for(hub_connection.fetch(sql.SQL("SELECT 1"), []), 15)
+            self.assertEqual(rows, [(1,)])
+        finally:
+            await hub_connection.close()
+
+    @override_settings(PG_SSE={"STREAM_CONNECTIONS": 1, "QUERY_TIMEOUT": 0.5})
+    async def test_a_silent_pooled_connection_gives_up_and_reconnects(self):
+        hub = hub_module.Hub()
+        try:
+            ((pid,),) = await hub.streams.fetch(sql.SQL("SELECT pg_backend_pid()"), [])
+            async with self.stopped_backend(pid):
+                rows = await asyncio.wait_for(hub.streams.fetch(sql.SQL("SELECT 1"), []), 15)
+            self.assertEqual(rows, [(1,)])
+        finally:
+            await hub.stop()
+
+    @override_settings(PG_SSE={"STREAM_CONNECTIONS": 1, "QUERY_TIMEOUT": 0.5})
+    async def test_a_hanging_pool_check_gives_up(self):
+        # Another half-open idle connection would hold pool.check() before the retry.
+        hub = hub_module.Hub()
+        fetch = hub_module._fetch  # pyright: ignore[reportPrivateUsage]
+        failed: list[bool] = []
+
+        async def lose_the_connection_once(conn: Any, query: Any, params: list[Any]) -> list[tuple[Any, ...]]:
+            if not failed:
+                failed.append(True)
+                await conn.close()
+                raise psycopg.OperationalError("server closed the connection unexpectedly")
+            return await fetch(conn, query, params)
+
+        try:
+            await hub.streams.fetch(sql.SQL("SELECT 1"), [])
+            pool = await hub.streams._open()  # pyright: ignore[reportPrivateUsage]
+
+            async def hang() -> None:
+                await asyncio.sleep(60)
+
+            hang_check = mock.patch.object(pool, "check", hang)
+            with hang_check, mock.patch.object(hub_module, "_fetch", lose_the_connection_once):
+                with self.assertRaises(psycopg.OperationalError):
+                    await asyncio.wait_for(hub.streams.fetch(sql.SQL("SELECT 1"), []), 10)
+        finally:
+            await hub.stop()
+
+    @override_settings(PG_SSE={"QUERY_TIMEOUT": 0.2})
+    async def test_a_slow_query_on_a_healthy_server_is_not_retried(self):
+        hub_connection = hub_module._Connection()  # pyright: ignore[reportPrivateUsage]
+        try:
+            with self.assertRaises(psycopg.OperationalError):
+                await asyncio.wait_for(hub_connection.fetch(sql.SQL("SELECT pg_sleep(2)"), []), 10)
+            # The cancelled query leaves the connection usable; a retry would have slept again.
+            self.assertEqual(await hub_connection.fetch(sql.SQL("SELECT 1"), []), [(1,)])
+        finally:
+            await hub_connection.close()
+
+    def test_connections_give_up_connecting_after_ten_seconds(self):
+        self.assertEqual(hub_module.connect_params()["connect_timeout"], 10)
+        options = {**connection.settings_dict["OPTIONS"], "connect_timeout": 3}
+        with mock.patch.dict(connection.settings_dict, OPTIONS=options):
+            self.assertEqual(hub_module.connect_params()["connect_timeout"], 3)
+
+    def test_libpq_connect_timeouts_from_the_environment_or_a_service_apply(self):
+        # A default kwarg would override PGCONNECT_TIMEOUT and a service file's connect_timeout.
+        with mock.patch.dict(os.environ, PGCONNECT_TIMEOUT="30"):
+            self.assertNotIn("connect_timeout", hub_module.connect_params())
+        options = {**connection.settings_dict["OPTIONS"], "service": "pg_sse"}
+        with mock.patch.dict(connection.settings_dict, OPTIONS=options):
+            self.assertNotIn("connect_timeout", hub_module.connect_params())
+
+    def test_a_blocked_socket_gives_up_on_linux(self):
+        # TCP_USER_TIMEOUT ends any send or receive the server stops acknowledging.
+        self.assertEqual(hub_module.connect_params()["tcp_user_timeout"], 30000)
+
     async def test_a_terminated_connection_is_replaced(self):
         # A database restart ends every backend; the next query must not fail with it.
         hub = hub_module.Hub()
