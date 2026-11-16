@@ -37,6 +37,7 @@
 | `CAN_SUBSCRIBE` | `"django_pg_sse.permissions.can_subscribe"` | Dotted path to a function `(request, topic) -> bool` that decides who may read a topic. |
 | `RETENTION_HOURS` | `24` | How long `prune_stream_events` keeps events, which is how far back `Last-Event-ID` reaches. |
 | `STREAM_CONNECTIONS` | `4` | Connections per ASGI worker for the replay and revocation queries of opening streams. |
+| `DATABASE` | `"default"` | The `DATABASES` alias of the hub's connections. It must reach the same database as `default`. |
 | `QUERY_TIMEOUT` | `30` | Seconds after which a query of the hub gives up; a half-open connection would wait minutes. |
 
 ## System checks
@@ -46,6 +47,7 @@
 .. autofunction:: django_pg_sse.checks.check_stream_connections
 .. autofunction:: django_pg_sse.checks.check_retention_hours
 .. autofunction:: django_pg_sse.checks.check_query_timeout
+.. autofunction:: django_pg_sse.checks.check_hub_database
 .. autofunction:: django_pg_sse.checks.check_middleware
 ```
 

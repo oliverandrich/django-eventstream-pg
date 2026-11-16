@@ -6,7 +6,7 @@ from typing import Any
 from django.apps import AppConfig, apps
 from django.conf import settings
 from django.core.checks import CheckMessage, Error, Warning  # noqa: A004
-from django.db import connections
+from django.db import DEFAULT_DB_ALIAS, connections
 from django.utils.module_loading import import_string
 
 from django_pg_sse import conf
@@ -25,17 +25,28 @@ def is_positive_number(value: Any) -> bool:
 
 # Django passes both arguments by keyword, so they keep their names although the checks ignore them.
 def check_postgresql(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
-    """pg_sse.E001: the default database must be PostgreSQL."""
+    """pg_sse.E001: the default database and the hub's database must be PostgreSQL."""
     # LISTEN/NOTIFY and advisory locks exist only in PostgreSQL.
-    vendor = connections["default"].vendor
-    if vendor == "postgresql":
-        return []
+    # check_hub_database() reports a hub alias that DATABASES lacks.
+    aliases: set[str] = {DEFAULT_DB_ALIAS}
+    if _defined(hub := conf.get("DATABASE")):
+        aliases.add(hub)
     return [
         Error(
-            f"django-pg-sse needs PostgreSQL, but the default database is {vendor}.",
+            f"django-pg-sse needs PostgreSQL, but the database {alias!r} is {connections[alias].vendor}.",
             id="pg_sse.E001",
         )
+        for alias in sorted(aliases)
+        if connections[alias].vendor != "postgresql"
     ]
+
+
+def check_hub_database(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
+    """pg_sse.E005: PG_SSE["DATABASE"] must name an alias in DATABASES."""
+    alias = conf.get("DATABASE")
+    if _defined(alias):
+        return []
+    return [Error(f'PG_SSE["DATABASE"] names {alias!r}, which DATABASES does not define.', id="pg_sse.E005")]
 
 
 def check_stream_connections(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
@@ -80,6 +91,11 @@ def check_middleware(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> 
             id="pg_sse.W001",
         )
     ]
+
+
+def _defined(alias: Any) -> bool:
+    # A dict in place of the alias name would make `in connections` raise TypeError.
+    return isinstance(alias, str) and alias in connections
 
 
 def _positive_int_setting(name: str, check_id: str) -> list[CheckMessage]:

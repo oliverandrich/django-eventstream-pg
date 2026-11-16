@@ -968,7 +968,67 @@ class CloseStreamsArgumentsTest(SimpleTestCase):
 ROLE = "django_pg_sse_test_role"
 
 
+class HubDatabaseAliasTest(StreamTestCase):
+    databases = {"default", "direct"}
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    async def test_the_hub_connects_through_its_alias(self):
+        hub = hub_module.Hub()
+        try:
+            query = sql.SQL("SELECT current_setting('application_name')")
+            rows = [await hub.live.fetch(query, []), await hub.streams.fetch(query, [])]
+        finally:
+            await hub.stop()
+        self.assertEqual(rows, [[("pg_sse_direct",)]] * 2)
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    @stops_the_hub
+    async def test_a_broadcast_through_default_reaches_a_hub_on_the_alias(self):
+        stream = await self.open_stream("public:news")
+        await sync_to_async(publish.broadcast)("public:news", "<p>across aliases</p>")
+        self.assertIn("<p>across aliases</p>", await self.next_message(stream))
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    async def test_a_hub_on_another_database_is_logged(self):
+        # broadcast() writes through default; a hub on another database would hear nothing.
+        async def connect_to_postgres() -> hub_module.Connection:
+            params: dict[str, Any] = {**hub_module.connect_params(), "dbname": "postgres"}
+            return await psycopg.AsyncConnection.connect(**params, autocommit=True)
+
+        with mock.patch.object(hub_module, "_connect", connect_to_postgres):
+            with self.assertLogs(hub_module.logger, "ERROR"):
+                self.assertTrue(await hub_module._verify_database())  # pyright: ignore[reportPrivateUsage]
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    async def test_a_hub_on_the_same_database_logs_nothing(self):
+        with self.assertNoLogs(hub_module.logger, "WARNING"):
+            self.assertTrue(await hub_module._verify_database())  # pyright: ignore[reportPrivateUsage]
+
+    @override_settings(PG_SSE={"DATABASE": "direct", "QUERY_TIMEOUT": 0.2})
+    async def test_a_comparison_that_cannot_finish_reports_it(self):
+        async def hang() -> hub_module.Connection:
+            await asyncio.sleep(60)
+            raise AssertionError
+
+        with mock.patch.object(hub_module, "_connect", hang), self.assertLogs(hub_module.logger, "WARNING"):
+            compared = await asyncio.wait_for(hub_module._verify_database(), 5)  # pyright: ignore[reportPrivateUsage]
+        self.assertFalse(compared)
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    @stops_the_hub
+    async def test_the_comparison_does_not_delay_the_first_stream(self):
+        # A slow default must not hold LISTEN; streams would time out waiting for the hub.
+        async def slow() -> bool:
+            await asyncio.sleep(60)
+            return True
+
+        with mock.patch.object(hub_module, "_verify_database", slow):
+            await asyncio.wait_for(self.open_stream("public:news"), 5)
+
+
 class HubConnectionOptionsTest(TransactionTestCase):
+    databases = {"default", "direct"}
+
     def run_sql(self, statement: str) -> None:
         with connection.cursor() as cursor:
             cursor.execute(sql.SQL(statement).format(sql.Identifier(ROLE)))  # pyright: ignore[reportArgumentType]
@@ -997,3 +1057,17 @@ class HubConnectionOptionsTest(TransactionTestCase):
         finally:
             await hub.stop()
         self.assertEqual(rows, [[(ROLE,)]] * 2)
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    async def test_the_role_comes_from_the_hub_alias(self):
+        await sync_to_async(self.run_sql)("DROP ROLE IF EXISTS {}")
+        await sync_to_async(self.run_sql)("CREATE ROLE {} NOLOGIN")
+        self.addCleanup(self.run_sql, "DROP ROLE IF EXISTS {}")
+        direct = connections["direct"].settings_dict
+        hub = hub_module.Hub()
+        try:
+            with mock.patch.dict(direct, OPTIONS={**direct["OPTIONS"], "assume_role": ROLE}):
+                rows = await hub.live.fetch(sql.SQL("SELECT current_user"), [])
+        finally:
+            await hub.stop()
+        self.assertEqual(rows, [(ROLE,)])

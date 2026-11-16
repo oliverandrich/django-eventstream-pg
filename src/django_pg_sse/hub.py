@@ -9,7 +9,8 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import psycopg
-from django.db import connection
+from django.db import DEFAULT_DB_ALIAS, connections
+from django.db.backends.base.base import BaseDatabaseWrapper
 from psycopg import sql
 from psycopg_pool import AsyncConnectionPool
 
@@ -43,9 +44,14 @@ CONNECT_TIMEOUT = 10
 type Queue = asyncio.Queue[Message | Signal]
 
 
-def connect_params() -> dict[str, Any]:
-    """Arguments for a psycopg connection to the default database, outside Django's pool."""
-    params: dict[str, Any] = connection.get_connection_params()
+def hub_database() -> BaseDatabaseWrapper:
+    """The Django connection whose settings the hub's own connections use: PG_SSE["DATABASE"]."""
+    return connections[conf.get("DATABASE")]
+
+
+def connect_params(database: BaseDatabaseWrapper | None = None) -> dict[str, Any]:
+    """Arguments for a psycopg connection to `database`, the hub's by default, outside Django's pool."""
+    params: dict[str, Any] = (database or hub_database()).get_connection_params()
     # Django's sync cursor factory and adapter context do not fit an AsyncConnection.
     params.pop("cursor_factory", None)
     params.pop("context", None)
@@ -67,7 +73,7 @@ async def _connect() -> Connection:
 
 async def _assume_role(conn: Connection) -> None:
     # get_connection_params() leaves assume_role to Django's own connection setup.
-    if role := connection.settings_dict["OPTIONS"].get("assume_role"):
+    if role := hub_database().settings_dict["OPTIONS"].get("assume_role"):
         await conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
 
 
@@ -170,6 +176,9 @@ class Hub:
         # The topics of each queue, its owner's close topics included, so it can leave the index.
         self.subscriptions: dict[Queue, list[str]] = {}
         self.ready = asyncio.Event()
+        # A comparison that could not finish runs again after the next reconnect.
+        self.verified = False
+        self.verification: asyncio.Task[None] | None = None
         self.last_id: int | None = None
         self.task: asyncio.Task[None] | None = None
         self.live = _Connection()
@@ -204,6 +213,9 @@ class Hub:
         """The newest stored id, read on the connections of opening streams."""
         return await _newest(self.streams)
 
+    async def _verify(self) -> None:
+        self.verified = await _verify_database()
+
     async def _newest(self) -> int:
         return await _newest(self.live)
 
@@ -217,6 +229,10 @@ class Hub:
         loop = asyncio.get_running_loop()
         if _hubs.get(loop) is self:
             del _hubs[loop]
+        if self.verification is not None:
+            self.verification.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.verification
         if self.task is not None:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -237,6 +253,9 @@ class Hub:
                     await listening.execute(sql.SQL("LISTEN {}").format(sql.Identifier(CHANNEL)))
                     await self._catch_up()
                     self.ready.set()
+                    if not self.verified and (self.verification is None or self.verification.done()):
+                        # A task: a slow default must not hold the streams that wait for ready.
+                        self.verification = asyncio.get_running_loop().create_task(self._verify())
                     delays = RECONNECT_DELAYS
                     while True:
                         notifies = listening.notifies(timeout=HEALTH_SECONDS, stop_after=1)
@@ -339,6 +358,34 @@ async def _fetch(conn: Connection, query: sql.SQL | sql.Composed, params: list[A
     async with _within(conf.get("QUERY_TIMEOUT"), "The query did not finish in time."):
         cursor = await conn.execute(query, params)
         return await cursor.fetchall()
+
+
+async def _verify_database() -> bool:
+    """Log an error if the hub reaches another database than default, which broadcast() writes to.
+
+    Return whether the comparison finished. A clone of the same cluster passes, because it keeps
+    its system_identifier.
+    """
+    if conf.get("DATABASE") == DEFAULT_DB_ALIAS:
+        return True
+    query = "SELECT current_database(), (SELECT system_identifier FROM pg_control_system())"
+    try:
+        async with _within(conf.get("QUERY_TIMEOUT"), "The comparison did not finish in time."):
+            async with await _connect() as hub:
+                hub_side = await (await hub.execute(query)).fetchone()
+            params = connect_params(connections[DEFAULT_DB_ALIAS])
+            async with await psycopg.AsyncConnection.connect(**params, autocommit=True) as default:
+                default_side = await (await default.execute(query)).fetchone()
+    except psycopg.Error:
+        logger.warning("Could not compare the hub's database with default; retrying after a reconnect.", exc_info=True)
+        return False
+    if hub_side != default_side:
+        logger.error(
+            "PG_SSE['DATABASE'] reaches %s, but default reaches %s; streams will receive no events.",
+            hub_side,
+            default_side,
+        )
+    return True
 
 
 async def _check(listening: Connection) -> None:

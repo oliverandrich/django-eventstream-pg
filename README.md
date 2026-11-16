@@ -180,7 +180,7 @@ A receiver that raises is logged to `django.dispatch`, and the stream goes on.
 The [deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html) covers sizing,
 timeouts, proxies and shutdown in more detail.
 
-The hub's connections use `DATABASES["default"]`, outside Django's connection pool.
+The hub's connections use the alias in `PG_SSE["DATABASE"]` (default `"default"`), outside Django's connection pool.
 Each ASGI worker holds one for LISTEN, one for live delivery and a pool for opening streams.
 `PG_SSE["STREAM_CONNECTIONS"]` (default 4) caps that pool.
 A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
@@ -190,7 +190,8 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - They apply `OPTIONS["assume_role"]` with `SET ROLE`.
 - `pool`, `isolation_level` and `server_side_binding` do not apply. The hub runs in autocommit.
 - LISTEN needs a session. A PgBouncer in transaction mode cannot carry it.
-  With such a PgBouncer, point `default` straight at PostgreSQL.
+  With such a PgBouncer, give the hub an alias that reaches PostgreSQL directly.
+  The alias must reach the same database as `default`, which `broadcast()` writes to.
 - Over TCP, they use libpq keepalives: 30 seconds idle, then 3 probes 10 seconds apart.
 - On Linux, `tcp_user_timeout` ends a send or receive that the server leaves unacknowledged for 30 seconds.
   `OPTIONS` overrides these socket options.

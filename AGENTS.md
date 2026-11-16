@@ -35,6 +35,10 @@ src/django_pg_sse/
 - `_within()` turns a timeout into `OperationalError`, so callers treat it like a lost connection.
   `_fetch()` and `pool.check()` run within `PG_SSE["QUERY_TIMEOUT"]`; `_check()` within `HEALTH_TIMEOUT`.
   psycopg closes a connection whose server does not answer the cancel, so the retry below applies.
+- The hub's connections use `PG_SSE["DATABASE"]` through `hub_database()`.
+  `broadcast()`, the stream view and `prune_stream_events` use `default`.
+  `_verify_database()` runs as a task after `ready.set()`, within `QUERY_TIMEOUT`.
+  It logs an error if both reach different databases, and runs again after a reconnect if it could not compare.
 - `connect_params()` sets keepalives and `tcp_user_timeout` unless `OPTIONS` sets them.
   It sets `connect_timeout` only without `PGCONNECT_TIMEOUT`, `PGSERVICE` and `OPTIONS["service"]`.
 - `_Connection.fetch()` and `_Pool.fetch()` retry once when an `OperationalError` closed the connection.

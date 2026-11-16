@@ -14,6 +14,7 @@ class PgSseConfig(AppConfig):
 
     def ready(self) -> None:
         from django_pg_sse.checks import (
+            check_hub_database,
             check_middleware,
             check_postgresql,
             check_query_timeout,
@@ -23,6 +24,7 @@ class PgSseConfig(AppConfig):
 
         for check in (
             check_postgresql,
+            check_hub_database,
             check_stream_connections,
             check_retention_hours,
             check_query_timeout,

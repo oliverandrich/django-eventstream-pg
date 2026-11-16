@@ -69,7 +69,7 @@ granian's `--workers-lifetime` restarts a worker after a set time, which ends th
 
 ### Connections
 
-Each worker holds its own connections to `DATABASES["default"]`, outside Django's connection pool.
+Each worker holds its own connections to the alias in `PG_SSE["DATABASE"]`, outside Django's connection pool.
 They are one for `LISTEN`, one for live delivery and a pool of up to `PG_SSE["STREAM_CONNECTIONS"]` (default 4).
 An open stream holds no connection from Django's pool.
 
@@ -109,8 +109,37 @@ Raise `QUERY_TIMEOUT` for a database that answers slowly under load.
 ### PgBouncer
 
 `LISTEN` needs a session.
-A PgBouncer in transaction mode cannot carry it, so point `default` straight at PostgreSQL.
+A PgBouncer in transaction mode cannot carry it.
 A PgBouncer in session mode keeps one server connection per client connection, so `LISTEN` works.
+
+With a PgBouncer in transaction mode, give the hub its own alias that bypasses it:
+
+```python
+DATABASES = {
+    "default": {  # requests, through PgBouncer
+        "ENGINE": "django.db.backends.postgresql",
+        "HOST": "pgbouncer",
+        "PORT": 6432,
+        "NAME": "app",
+    },
+    "direct": {  # the same database, without PgBouncer
+        "ENGINE": "django.db.backends.postgresql",
+        "HOST": "postgres",
+        "PORT": 5432,
+        "NAME": "app",
+    },
+}
+PG_SSE = {"DATABASE": "direct"}
+```
+
+The hub's `LISTEN`, live and stream connections then use `direct`.
+`broadcast()`, the stream view and `prune_stream_events` keep using `default`.
+`NOTIFY` works through PgBouncer in transaction mode, because PostgreSQL sends it at commit.
+Both aliases must reach the same database.
+Once the hub listens, it compares `current_database()` and the cluster's `system_identifier` through both.
+It logs an error at `django_pg_sse.hub` if they differ.
+If the comparison cannot finish, it logs a warning and runs again after the next reconnect.
+A clone of the same cluster, such as a promoted replica, passes the comparison.
 
 ## Reverse proxy
 
@@ -215,11 +244,13 @@ def prune_stream_events():
 | `django_pg_sse.hub` | WARNING | A NOTIFY on the channel had a payload the hub cannot read. |
 | `django_pg_sse.hub` | WARNING | The newest event id fell, such as after a restore. |
 | `django.db.backends.base` | ERROR | Storing an event failed after the commit, and the event is lost. |
+| `django_pg_sse.hub` | ERROR | `PG_SSE["DATABASE"]` reaches another database than `default`. |
+| `django_pg_sse.hub` | WARNING | The hub could not compare its database with `default`. |
 | `django.dispatch` | ERROR | A receiver of `stream_opened` or `stream_closed` raised. |
 
 A failed query of an opening stream ends that stream; the ASGI server logs its traceback.
 
-`manage.py check` runs the system checks `pg_sse.E001` to `pg_sse.E004` and `pg_sse.W001`.
+`manage.py check` runs the system checks `pg_sse.E001` to `pg_sse.E005` and `pg_sse.W001`.
 The signals `stream_opened` and `stream_closed` can count open streams, for example as a gauge:
 
 ```python

@@ -60,6 +60,16 @@ class CheckTest(SimpleTestCase):
             with override_settings(PG_SSE={"QUERY_TIMEOUT": value}):
                 self.assertEqual(checks.check_query_timeout(None), [], value)
 
+    def test_the_hub_database_must_be_a_configured_alias(self):
+        with override_settings(PG_SSE={"DATABASE": "missing"}):
+            errors = checks.check_hub_database(None)
+        self.assertEqual([error.id for error in errors], ["pg_sse.E005"])
+        with override_settings(PG_SSE={"DATABASE": {"NAME": "app"}}):
+            errors = checks.check_hub_database(None) + checks.check_postgresql(None)
+        self.assertEqual([error.id for error in errors], ["pg_sse.E005"])
+        with override_settings(PG_SSE={"DATABASE": "direct"}):
+            self.assertEqual(checks.check_hub_database(None), [])
+
     def test_a_missing_authentication_middleware_is_a_warning(self):
         middleware = [m for m in settings.MIDDLEWARE if not m.endswith("AuthenticationMiddleware")]
         with override_settings(MIDDLEWARE=middleware):
