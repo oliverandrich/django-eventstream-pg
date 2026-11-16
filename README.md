@@ -1,5 +1,7 @@
 # django-pg-sse
 
+Documentation: <https://django-pg-sse.readthedocs.io/>
+
 Server-sent events for Django over PostgreSQL `LISTEN`/`NOTIFY`. Push HTML from any process to the
 open browsers of a topic, with replay after a reconnect. No Redis, no message broker.
 
@@ -184,6 +186,9 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - `pool`, `isolation_level` and `server_side_binding` do not apply. The hub runs in autocommit.
 - LISTEN needs a session. A PgBouncer in transaction mode cannot carry it.
   With such a PgBouncer, point `default` straight at PostgreSQL.
+- Over TCP, they use libpq keepalives: 30 seconds idle, then 3 probes 10 seconds apart.
+  `keepalives` and its siblings in `OPTIONS` override them.
+- They set no `connect_timeout`. Set one in `OPTIONS`, so a reconnect to an unreachable host gives up.
 
 ## How it works
 
@@ -193,9 +198,11 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
 - The number of connections per ASGI worker does not grow with the number of open streams.
   Open streams hold no connection from Django's pool.
 - A listener that loses its connection reconnects and loads the events it missed from the table.
-- A listener quiet for 30 seconds checks its connection with `SELECT 1` and reconnects without an answer.
-  This catches a half-open connection, such as after a failover, within about a minute.
-- Over TCP, the hub's connections use libpq keepalives unless `OPTIONS` sets them.
+- After 30 seconds without a NOTIFY, the listener sends `SELECT 1` and waits up to 10 seconds.
+  Without an answer, it reconnects; psycopg can add up to 10 seconds while it cancels the query.
+  This replaces a half-open LISTEN connection, such as after a failover, within about a minute.
+- No such check guards a query on the other connections.
+  A query in flight on a half-open connection waits for the operating system's TCP timeout.
 - A query on a connection that a database restart ended runs once more on a new connection.
 - The view opts out of `ATOMIC_REQUESTS`, which Django does not allow for async views.
 - `close_streams()` stores an event on a close topic of the user or the session.

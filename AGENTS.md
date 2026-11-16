@@ -63,6 +63,16 @@ src/django_pg_sse/
 - `__init__.py` must not import the model at module level. Django imports the package while it
   loads `INSTALLED_APPS`, before models can load.
 
+## Docs
+
+`docs/` builds with Sphinx, MyST and furo on Read the Docs.
+`docs/index.md` includes the README.
+`docs/changelog.md` includes CHANGELOG.md.
+`docs/api.md` lists the public API for autodoc; add a new public name there.
+`mise run build-docs` builds with `-W`, as the CI job does.
+`mise run serve-docs` rebuilds on change.
+`tests/test_docs.py` fails when a module or an exported name lacks a docstring.
+
 ## Tests
 
 The suite needs a PostgreSQL server; `tests/settings.py` reads `POSTGRES_*` variables and

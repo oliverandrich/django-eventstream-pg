@@ -33,6 +33,7 @@ dependencies = [
 ]
 
 [project.urls]
+Documentation = "https://django-pg-sse.readthedocs.io/"
 Repository = "https://github.com/oliverandrich/django-pg-sse"
 Changelog = "https://github.com/oliverandrich/django-pg-sse/blob/main/CHANGELOG.md"
 

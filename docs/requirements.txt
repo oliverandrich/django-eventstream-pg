@@ -1,0 +1,9 @@
+# Exact pins: the docs build fails on any warning, so a new release must not change it unseen.
+# Dependabot proposes updates.
+sphinx==9.2.0
+myst-parser==5.2.0
+sphinx-copybutton==0.5.2
+sphinx-autobuild==2025.8.25
+furo==2025.12.19
+# autodoc imports the package; the binary wheel needs no libpq on the build host.
+psycopg[binary,pool]==3.3.9
