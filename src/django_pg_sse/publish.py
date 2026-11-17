@@ -14,7 +14,7 @@ from django.http import HttpRequest
 from django.utils.asyncio import async_unsafe
 
 from django_pg_sse.messages import CHANNEL, LINE_BREAK, RESERVED_EVENTS, RESERVED_PREFIX, Owner
-from django_pg_sse.models import EVENT_MAX_LENGTH, TOPIC_MAX_LENGTH, StreamEvent
+from django_pg_sse.models import EVENT_MAX_LENGTH, LATEST_MAX_LENGTH, TOPIC_MAX_LENGTH, StreamEvent
 
 # Serialises event writers, so ids become visible in the order they are assigned.
 # Replay after Last-Event-ID would skip an event whose smaller id committed late.
@@ -24,30 +24,32 @@ PUBLISH_LOCK_KEY = int.from_bytes(b"sse-emit", signed=True)
 # async_unsafe: from a running event loop, the robust on_commit callback could only log the
 # failure, and the event would be lost; the a* variants below serve async code.
 @async_unsafe
-def broadcast(topic: str, data: str, event: str = "") -> None:
+def broadcast(topic: str, data: str, event: str = "", latest: str = "") -> None:
     """Send `data` to every stream subscribed to `topic`, once the current transaction commits.
 
     A rollback sends nothing. htmx swaps `data` as HTML. With a name in `event`, htmx dispatches
     a DOM event of that name instead, and `data` may be any text.
 
-    Raises ValueError for a topic starting with `_`, a topic over 200 characters, an event name
-    over 100 characters, an event name with a line break, and the event names `closed` and
+    `latest` marks a snapshot, such as an online list that replaces the previous one.
+    A replay, including the hub's catch-up, skips a snapshot when a newer one has the same topic and key.
+
+    Raises ValueError for a topic starting with `_`, a topic over 200 characters, an event name or
+    latest key over 100 characters, either with a line break, and the event names `closed` and
     `hx:release`. Raises SynchronousOnlyOperation in a running event loop; use abroadcast() there.
     """
     if topic.startswith(RESERVED_PREFIX):
         raise ValueError(f"Topics starting with {RESERVED_PREFIX!r} are reserved.")
     # The database would refuse a longer value after the commit, where it is only logged.
-    _check_length("topic", topic, TOPIC_MAX_LENGTH)
-    _check_length("event name", event, EVENT_MAX_LENGTH)
-    if LINE_BREAK.search(event):
-        raise ValueError("An SSE event name cannot contain a line break.")
+    _check_length("An SSE topic", topic, TOPIC_MAX_LENGTH)
+    _check_name("An SSE event name", event, EVENT_MAX_LENGTH)
+    _check_name("A latest key", latest, LATEST_MAX_LENGTH)
     if event in RESERVED_EVENTS:
         raise ValueError(f"The event name {event!r} controls the stream.")
-    _broadcast(topic, data, event)
+    _broadcast(topic, data, event, latest)
 
 
 @async_unsafe
-def broadcast_json(topic: str, value: Any, *, event: str) -> None:
+def broadcast_json(topic: str, value: Any, *, event: str, latest: str = "") -> None:
     """Send `value` as JSON in an event named `event`, like broadcast().
 
     DjangoJSONEncoder encodes it, so dates, decimals and UUIDs work.
@@ -60,30 +62,37 @@ def broadcast_json(topic: str, value: Any, *, event: str) -> None:
         raise ValueError("broadcast_json() needs an event name.")
     # allow_nan=False: JSON.parse() in the browser rejects NaN and Infinity.
     data = json.dumps(value, cls=DjangoJSONEncoder, separators=(",", ":"), allow_nan=False)
-    broadcast(topic, data, event)
+    broadcast(topic, data, event, latest)
 
 
-def _check_length(name: str, value: str, limit: int) -> None:
+def _check_length(label: str, value: str, limit: int) -> None:
     if len(value) > limit:
-        raise ValueError(f"An SSE {name} has at most {limit} characters, not {len(value)}.")
+        raise ValueError(f"{label} has at most {limit} characters, not {len(value)}.")
 
 
-def _broadcast(topic: str, data: str, event: str = "") -> None:
+def _check_name(label: str, value: str, limit: int) -> None:
+    _check_length(label, value, limit)
+    # A line break would end the SSE field early.
+    if LINE_BREAK.search(value):
+        raise ValueError(f"{label} cannot contain a line break.")
+
+
+def _broadcast(topic: str, data: str, event: str = "", latest: str = "") -> None:
     # A function, not functools.partial: Django before 6.1 logs a robust callback's failure
     # through its __qualname__, which partial objects lack.
     def publish() -> None:
-        _publish(topic, data, event)
+        _publish(topic, data, event, latest)
 
     # robust: the caller's transaction has committed, so a failure here is logged, not raised.
     transaction.on_commit(publish, robust=True)
 
 
-def _publish(topic: str, data: str, event: str) -> None:
+def _publish(topic: str, data: str, event: str, latest: str) -> None:
     # on_commit runs this in autocommit. Inside an outer transaction, a savepoint keeps a
     # failed statement from aborting that transaction.
     savepoint = transaction.atomic() if connection.in_atomic_block else contextlib.nullcontext()
     with savepoint, connection.cursor() as cursor:
-        cursor.execute(_publish_sql(), [PUBLISH_LOCK_KEY, topic, event, data, CHANNEL])
+        cursor.execute(_publish_sql(), [PUBLISH_LOCK_KEY, topic, event, data, latest, CHANNEL])
 
 
 @functools.cache
@@ -99,8 +108,8 @@ def _publish_sql() -> str:
     return f"""
         WITH locked AS (SELECT pg_advisory_xact_lock(%s)),
         stored AS (
-            INSERT INTO {table} (topic, event, data, created)
-            SELECT %s, %s, %s, clock_timestamp() FROM locked
+            INSERT INTO {table} (topic, event, data, latest, created)
+            SELECT %s, %s, %s, %s, clock_timestamp() FROM locked
             RETURNING id, topic
         )
         SELECT pg_notify(%s, id || ':' || topic) FROM stored
@@ -132,14 +141,14 @@ def close_streams(*, user: AbstractBaseUser | None = None, session: SessionBase 
 
 
 # The sync functions use the database connection, so they run in Django's sync thread.
-async def abroadcast(topic: str, data: str, event: str = "") -> None:
+async def abroadcast(topic: str, data: str, event: str = "", latest: str = "") -> None:
     """broadcast() for async code. It runs in Django's sync thread and raises what broadcast() raises."""
-    await sync_to_async(broadcast)(topic, data, event)
+    await sync_to_async(broadcast)(topic, data, event, latest)
 
 
-async def abroadcast_json(topic: str, value: Any, *, event: str) -> None:
+async def abroadcast_json(topic: str, value: Any, *, event: str, latest: str = "") -> None:
     """broadcast_json() for async code. It raises what broadcast_json() raises."""
-    await sync_to_async(broadcast_json)(topic, value, event=event)
+    await sync_to_async(broadcast_json)(topic, value, event=event, latest=latest)
 
 
 async def aclose_streams(*, user: AbstractBaseUser | None = None, session: SessionBase | None = None) -> None:

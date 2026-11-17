@@ -53,6 +53,10 @@ src/django_pg_sse/
   `StreamPool.transaction()` does not retry; each of its queries runs within `QUERY_TIMEOUT`.
 - `broadcast()` writes after the commit, in a short transaction holding an advisory lock.
   Event ids therefore become visible in order. Replay after `Last-Event-ID` depends on it.
+- `_replay()` skips an event with a `latest` key when a newer event has the same topic and key.
+  The stream's replay and the hub's catch-up both use `_replay()`, so both skip replaced snapshots.
+  Delivery by NOTIFY sends every event.
+  The column has a database default, so an older release's INSERT without it keeps working during a deploy.
 - `_publish()` runs one statement: it takes the lock, stores the event and sends the NOTIFY.
   The INSERT reads from the lock's CTE, so the event takes its id under the lock.
 - Topics starting with `_` are reserved. The view refuses them before `CAN_SUBSCRIBE` runs,

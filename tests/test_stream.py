@@ -366,6 +366,28 @@ class StreamTest(StreamTestCase):
         self.assertEqual(await self.next_message(stream), f"id: {signed(missed.id, 'public:news')}\ndata: missed\n\n")
 
     @stops_the_hub
+    async def test_replay_skips_snapshots_that_a_newer_one_replaces(self):
+        # An online list replaces the previous one; only the newest is worth replaying.
+        seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
+        await StreamEvent.objects.acreate(topic="public:news", data="old list", latest="online")
+        message = await StreamEvent.objects.acreate(topic="public:news", data="message")
+        await StreamEvent.objects.acreate(topic="public:other", data="other topic", latest="online")
+        new_list = await StreamEvent.objects.acreate(topic="public:news", data="new list", latest="online")
+        count = await StreamEvent.objects.acreate(topic="public:news", data="count", latest="count")
+        stream = await self.open_stream("public:news", headers={"Last-Event-ID": signed(seen.id, "public:news")})
+        replayed = [await self.next_message(stream) for _ in range(3)]
+        expected = [(message.id, "message"), (new_list.id, "new list"), (count.id, "count")]
+        self.assertEqual(replayed, [f"id: {signed(i, 'public:news')}\ndata: {d}\n\n" for i, d in expected])
+
+    @stops_the_hub
+    async def test_live_delivery_sends_every_snapshot(self):
+        stream = await self.open_stream("public:news")
+        await sync_to_async(publish.broadcast)("public:news", "first list", latest="online")
+        await sync_to_async(publish.broadcast)("public:news", "second list", latest="online")
+        self.assertIn("first list", await self.next_message(stream))
+        self.assertIn("second list", await self.next_message(stream))
+
+    @stops_the_hub
     async def test_an_unsigned_last_event_id_replays_nothing(self):
         # Otherwise a client could pick any id and read the whole retention of a topic.
         seen = await StreamEvent.objects.acreate(topic="public:news", data="seen")
@@ -423,6 +445,18 @@ class StreamTest(StreamTestCase):
             await sync_to_async(terminate_listener)()
             await sync_to_async(publish.broadcast)("public:news", "<p>during</p>")
             self.assertIn("<p>during</p>", await self.next_message(stream, timeout=10))
+
+    @stops_the_hub
+    async def test_the_catch_up_skips_snapshots_that_a_newer_one_replaces(self):
+        # Stored without NOTIFY while the listener is gone, so only the catch-up delivers them.
+        stream = await self.open_stream("public:news")
+        with self.assertLogs(hub_module.logger, "WARNING"):
+            await sync_to_async(terminate_listener)()
+            await StreamEvent.objects.acreate(topic="public:news", data="old list", latest="online")
+            await StreamEvent.objects.acreate(topic="public:news", data="new list", latest="online")
+            self.assertIn("new list", await self.next_message(stream, timeout=10))
+        await sync_to_async(publish.broadcast)("public:news", "after")
+        self.assertIn("after", await self.next_message(stream))
 
 
 class CloseStreamsTest(StreamTestCase):
@@ -818,6 +852,12 @@ class AsyncPublishTest(StreamTestCase):
         stream = await self.open_stream("public:news")
         await publish.abroadcast("public:news", "<p>from async</p>")
         self.assertIn("<p>from async</p>", await self.next_message(stream))
+
+    async def test_the_async_variants_pass_the_latest_key_on(self):
+        await publish.abroadcast("public:news", "<ul></ul>", latest="online")
+        await publish.abroadcast_json("public:news", {"online": 2}, event="count", latest="count")
+        keys = [event.latest async for event in StreamEvent.objects.order_by("id")]
+        self.assertEqual(keys, ["online", "count"])
 
     @stops_the_hub
     async def test_abroadcast_json_sends_a_named_event(self):

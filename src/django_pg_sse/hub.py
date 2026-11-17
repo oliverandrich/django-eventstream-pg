@@ -43,6 +43,9 @@ CONNECT_TIMEOUT = 10
 
 type Queue = asyncio.Queue[Message | Signal]
 
+# The columns Message(*row) reads, in its field order.
+MESSAGE_COLUMNS = "id, topic, event, data"
+
 
 def hub_database() -> BaseDatabaseWrapper:
     """The Django connection whose settings the hub's own connections use: PG_SSE["DATABASE"]."""
@@ -370,7 +373,16 @@ class Hub:
 async def _replay(
     connection: _Connection | StreamPool, topics: list[str], after_id: int, up_to: int | None = None
 ) -> list[Message]:
-    query = _select("WHERE topic = ANY(%s) AND id > %s AND (%s::bigint IS NULL OR id <= %s) ORDER BY id LIMIT %s")
+    # A snapshot with a latest key is skipped when a newer one replaces it; the newer one comes later.
+    query = sql.SQL(
+        f"SELECT {MESSAGE_COLUMNS} FROM {{table}} AS event "
+        "WHERE topic = ANY(%s) AND id > %s AND (%s::bigint IS NULL OR id <= %s) "
+        "AND (latest = '' OR NOT EXISTS (SELECT FROM {table} AS newer "
+        # latest <> '' lets the planner use the partial index django_pg_sse_latest.
+        "WHERE newer.topic = event.topic AND newer.latest = event.latest AND newer.latest <> '' "
+        "AND newer.id > event.id)) "
+        "ORDER BY id LIMIT %s"
+    ).format(table=_table())
     rows = await connection.fetch(query, [topics, after_id, up_to, up_to, REPLAY_BATCH])
     return [Message(*row) for row in rows]
 
@@ -438,7 +450,7 @@ def _table() -> sql.Identifier:
 
 def _select(condition: str) -> sql.Composed:
     # condition is a literal from this package, never user input.
-    query = "SELECT id, topic, event, data FROM {} " + condition
+    query = f"SELECT {MESSAGE_COLUMNS} FROM {{}} " + condition
     return sql.SQL(query).format(_table())  # pyright: ignore[reportArgumentType]
 
 

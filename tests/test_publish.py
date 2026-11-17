@@ -125,6 +125,18 @@ class BroadcastTest(TestCase):
         expected = '{"at":"2026-11-16T12:00:00Z","price":"1.50","online":12}'
         self.assertEqual((event.event, event.data), ("presence", expected))
 
+    def test_a_latest_key_is_stored_with_the_event(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            publish.broadcast("public:news", "<ul></ul>", latest="online")
+            publish.broadcast_json("public:news", {"online": 2}, event="count", latest="count")
+        self.assertEqual(list(StreamEvent.objects.order_by("id").values_list("latest", flat=True)), ["online", "count"])
+
+    def test_a_latest_key_follows_the_rules_of_event_names(self):
+        for latest in ("k" * 101, "on\nline"):
+            with self.assertRaises(ValueError, msg=latest):
+                publish.broadcast("public:news", "<ul></ul>", latest=latest)
+        self.assertFalse(StreamEvent.objects.exists())
+
     def test_a_too_long_topic_or_event_name_is_refused_before_commit(self):
         with self.assertRaises(ValueError):
             publish.broadcast("public:" + "x" * 200, "<p>hi</p>")
@@ -154,7 +166,7 @@ class BroadcastTest(TestCase):
         # The caller's transaction has committed; a 500 would invite a duplicate retry.
         # Production logs to django.db.backends.base; captureOnCommitCallbacks to django.test.
         # The statement fails on the server, which aborts the transaction it runs in.
-        failing = mock.patch.object(publish, "_publish_sql", return_value="SELECT %s, %s, %s, %s, %s, 1/0")
+        failing = mock.patch.object(publish, "_publish_sql", return_value="SELECT %s, %s, %s, %s, %s, %s, 1/0")
         with failing, self.assertLogs("django", "ERROR"), self.captureOnCommitCallbacks(execute=True):
             publish.broadcast("public:news", "<p>hi</p>")
         # A savepoint keeps the failure from aborting the surrounding transaction.

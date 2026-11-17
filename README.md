@@ -162,6 +162,17 @@ The events from the time without access then stay unread.
 Run `manage.py prune_stream_events` regularly, for example hourly; it deletes events older than
 `PG_SSE["RETENTION_HOURS"]` (default 24).
 
+Some events are snapshots that replace the previous one, such as an online list.
+`latest` gives them a key, and a replay skips a snapshot when a newer one has the same topic and key:
+
+```python
+broadcast("room:1", online_html, latest="online")
+```
+
+An open stream receives every snapshot as it is sent.
+The hub's catch-up after a lost `LISTEN` connection is a replay and skips replaced snapshots too.
+Events without `latest` are replayed in full.
+
 htmx's `hx-sse` closes the stream of a hidden tab and reconnects when the tab is visible again.
 The replay then delivers what the tab missed, in order.
 A tab hidden for longer than the retention misses the events pruned meanwhile.

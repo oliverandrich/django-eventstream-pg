@@ -5,6 +5,11 @@
 ### 🚀 Features
 - **`presence_changed` reports `updated`**: a reader whose new stream carries a changed meta, such as a new name.
   `present()` shows that newest meta in the reader's first place.
+- **`latest` for snapshot events**: `broadcast()`, `broadcast_json()` and their async variants take a key.
+  A replay skips a snapshot when a newer one has the same topic and key.
+  A returning tab therefore shows no outdated states.
+  The migration adds the column `latest` with a database default and builds its index concurrently.
+  Workers of 0.2 keep writing events during the deploy.
 
 ## 0.2.0 (2026-11-17)
 
