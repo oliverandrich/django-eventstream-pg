@@ -28,6 +28,18 @@
    :members:
 ```
 
+## Presence
+
+```{eval-rst}
+.. autoclass:: django_pg_sse.presence.Presence
+   :members:
+.. autofunction:: django_pg_sse.presence.tracker.present
+.. autofunction:: django_pg_sse.presence.tracker.apresent
+.. autodata:: django_pg_sse.presence.presence_changed
+   :annotation:
+.. autofunction:: django_pg_sse.presence.user_identity
+```
+
 ## Settings
 
 [Settings](settings.md) lists every `PG_SSE` key with its default, and the fixed values.
@@ -41,6 +53,8 @@
 .. autofunction:: django_pg_sse.checks.check_query_timeout
 .. autofunction:: django_pg_sse.checks.check_hub_database
 .. autofunction:: django_pg_sse.checks.check_middleware
+.. autofunction:: django_pg_sse.presence.checks.check_presence_topics
+.. autofunction:: django_pg_sse.presence.checks.check_presence_identity
 ```
 
 ## Management command

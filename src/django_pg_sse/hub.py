@@ -5,7 +5,7 @@ import contextlib
 import logging
 import os
 import weakref
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import Any
 
 import psycopg
@@ -353,7 +353,9 @@ async def _newest(connection: _Connection | _Pool) -> int:
     return rows[0][0]
 
 
-async def _fetch(conn: Connection, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
+async def _fetch(
+    conn: Connection, query: sql.SQL | sql.Composed, params: Sequence[Any] | Mapping[str, Any]
+) -> list[tuple[Any, ...]]:
     # psycopg cancels a timed-out query, and closes the connection if the server does not answer.
     async with _within(conf.get("QUERY_TIMEOUT"), "The query did not finish in time."):
         cursor = await conn.execute(query, params)

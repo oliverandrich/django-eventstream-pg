@@ -2,7 +2,8 @@
 
 Documentation: <https://django-pg-sse.readthedocs.io/>, with the
 [settings](https://django-pg-sse.readthedocs.io/en/latest/settings.html), a
-[deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html) and an
+[deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html),
+[presence](https://django-pg-sse.readthedocs.io/en/latest/presence.html) and an
 [API reference](https://django-pg-sse.readthedocs.io/en/latest/api.html).
 
 Server-sent events for Django over PostgreSQL `LISTEN`/`NOTIFY`. Push HTML from any process to the
@@ -165,13 +166,14 @@ Run `manage.py prune_stream_events` regularly, for example hourly; it deletes ev
 
 `django_pg_sse.signals` sends `stream_opened` when a stream's subscription is in place.
 It sends `stream_closed` when that stream ends, also after a disconnect during `stream_opened`.
-A process that is killed sends no `stream_closed`, so presence built on it needs a timeout.
+A process that is killed sends no `stream_closed`.
 Both signals pass `sender=StreamInfo` and a `stream` argument, a `StreamInfo` with these fields:
 
 - `id`: a new random id for each connection
 - `user_pk`: the user's primary key as a string, or `None` for an anonymous stream
 - `session`: the SHA-256 digest of the session key, or `None` for an anonymous stream
 - `topics`: the topics of the stream
+- `request`: the request that opened the stream; read its session and user in sync code
 
 ```python
 from django.dispatch import receiver
@@ -185,6 +187,13 @@ def count_stream(sender, stream, **kwargs):
 
 The stream waits for its receivers, so keep them short.
 A receiver that raises is logged to `django.dispatch`, and the stream goes on.
+
+## Presence
+
+The optional app `django_pg_sse.presence` tracks who has a topic open, such as the members of a chat room.
+`present(topic)` lists the readers, and the `presence_changed` signal reports joins and leaves.
+A reader with several tabs counts once, and a reconnect within 5 seconds changes nothing.
+See [Presence](https://django-pg-sse.readthedocs.io/en/latest/presence.html).
 
 ## Database connections
 

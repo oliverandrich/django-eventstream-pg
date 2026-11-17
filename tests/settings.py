@@ -11,6 +11,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django_pg_sse",
+    "django_pg_sse.presence",
 ]
 
 MIDDLEWARE = [

@@ -7,6 +7,7 @@
 
 settings
 deployment
+presence
 api
 changelog
 ```

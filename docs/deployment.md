@@ -72,6 +72,7 @@ granian's `--workers-lifetime` restarts a worker after a set time, which ends th
 Each worker holds its own connections to the alias in `PG_SSE["DATABASE"]`, outside Django's connection pool.
 They are one for `LISTEN`, one for live delivery and a pool of up to `PG_SSE["STREAM_CONNECTIONS"]` (default 4).
 An open stream holds no connection from Django's pool.
+Presence queries share the stream pool, so they add no connections.
 
 For 4 workers with the defaults, the hubs hold up to 4 × (2 + 4) = 24 connections.
 Django's own pool adds up to its `max_size` per worker.
@@ -227,7 +228,8 @@ def prune_stream_events():
 | `django.db.backends.base` | ERROR | Storing an event failed after the commit, and the event is lost. |
 | `django_pg_sse.hub` | ERROR | `PG_SSE["DATABASE"]` reaches another database than `default`. |
 | `django_pg_sse.hub` | WARNING | The hub could not compare its database with `default`. |
-| `django.dispatch` | ERROR | A receiver of `stream_opened` or `stream_closed` raised. |
+| `django.dispatch` | ERROR | A receiver of `stream_opened`, `stream_closed` or `presence_changed` raised. |
+| `django_pg_sse.presence.tracker` | WARNING | A presence refresh or sweep failed; the next one retries. |
 
 A failed query of an opening stream ends that stream; the ASGI server logs its traceback.
 

@@ -18,6 +18,10 @@ DEFAULTS: dict[str, Any] = {
     "DATABASE": "default",
     # Seconds after which a query of the hub gives up; a half-open connection would wait minutes.
     "QUERY_TIMEOUT": 30,
+    # Topic prefixes whose readers django_pg_sse.presence tracks; other topics write nothing.
+    "PRESENCE_TOPICS": [],
+    # Dotted path to a function (request) -> (identity, meta) | None that names a stream's reader.
+    "PRESENCE_IDENTITY": "django_pg_sse.presence.user_identity",
 }
 
 

@@ -139,7 +139,8 @@ class StreamTest(StreamTestCase):
             response = await AsyncClient().get("/events/?topic=public:news")
             view_connection.close.assert_not_called()
             await asyncio.wait_for(anext(content_of(response)), 5)
-        view_connection.close.assert_called_once_with()
+        # Receivers of stream_opened, such as presence, close it once more.
+        view_connection.close.assert_called_with()
 
     @stops_the_hub
     async def test_an_unexpected_error_restarts_the_listener(self):

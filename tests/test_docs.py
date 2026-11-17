@@ -7,7 +7,9 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 import django_pg_sse
+import django_pg_sse.presence
 from django_pg_sse import conf, hub, signals, views
+from django_pg_sse.presence import tracker
 
 
 class DocstringTest(SimpleTestCase):
@@ -23,6 +25,7 @@ class DocstringTest(SimpleTestCase):
     def test_every_public_name_has_a_docstring(self):
         public = [getattr(django_pg_sse, name) for name in django_pg_sse.__all__]
         public += [signals.StreamInfo]
+        public += [getattr(django_pg_sse.presence, name) for name in django_pg_sse.presence.__all__]
         missing = [item.__name__ for item in public if not inspect.getdoc(item)]
         self.assertEqual(missing, [])
 
@@ -55,6 +58,9 @@ class SettingsPageTest(SimpleTestCase):
             f"| {delays} seconds |",
             f"| {hub.QUEUE_SIZE} events |",
             f"| {hub.REPLAY_BATCH} events |",
+            f"| {tracker.HEARTBEAT_SECONDS} seconds | Presence:",
+            f"| {tracker.EXPIRE_SECONDS} seconds | Presence:",
+            f"| {tracker.GRACE_SECONDS} seconds | Presence:",
         ):
             self.assertIn(value, self.page, value)
 

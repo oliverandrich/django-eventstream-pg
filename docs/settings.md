@@ -59,6 +59,25 @@ Use it to bypass a PgBouncer in transaction mode; see [PgBouncer](deployment.md#
 The system check `pg_sse.E005` reports an alias that `DATABASES` does not define.
 `pg_sse.E001` reports an alias that is not PostgreSQL.
 
+### `PRESENCE_TOPICS`
+
+Default: `[]`
+
+Topic prefixes whose readers `django_pg_sse.presence` tracks, such as `["room:"]`.
+Streams on other topics write no presence rows.
+It must be a list of strings; the system check `pg_sse.E006` reports any other value.
+See [Presence](presence.md).
+
+### `PRESENCE_IDENTITY`
+
+Default: `"django_pg_sse.presence.user_identity"`
+
+The dotted path to a function `(request) -> (identity, meta) | None`.
+It names the reader of a stream that opens on a presence topic; None leaves the stream untracked.
+The default returns `("user:<pk>", {"name": username})` for a logged-in user and None otherwise.
+The system check `pg_sse.E007` reports a value that names no function.
+See [Presence](presence.md#identity).
+
 ## Other settings that apply
 
 ### `DATABASES`
@@ -101,3 +120,6 @@ These values are part of the package's behaviour and cannot be set.
 | 0.5, 1, 2, 5 seconds | The delays between the listener's reconnect attempts; after these, it retries every 5 seconds without limit. |
 | 1000 events | A stream's queue; a client that falls further behind is disconnected and replays. |
 | 500 events | One replay batch; a longer replay ends the stream, and the reconnect fetches the next batch. |
+| 15 seconds | Presence: each worker refreshes the rows of its open streams and sweeps. |
+| 45 seconds | Presence: a row without a heartbeat for this long belongs to a stopped worker and is swept. |
+| 5 seconds | Presence: a closed stream's row stays this long, so a reconnect sends no leave. |
