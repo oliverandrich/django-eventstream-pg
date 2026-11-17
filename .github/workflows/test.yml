@@ -222,3 +222,16 @@ jobs:
           persist-credentials: false
 
       - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+
+  # The main ruleset requires this one check instead of every job, so a new
+  # matrix entry needs no ruleset change. always() is required: a job skipped
+  # after a failed dependency reports as passing to a required status check.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [lint, build, coverage, docs, zizmor]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every job succeeded
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
