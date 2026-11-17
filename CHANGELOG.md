@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-11-17)
 
 ### 🚀 Features
 - **`presence_changed` reports `updated`**: a reader whose new stream carries a changed meta, such as a new name.
@@ -10,6 +10,9 @@
   A returning tab therefore shows no outdated states.
   The migration adds the column `latest` with a database default and builds its index concurrently.
   Workers of 0.2 keep writing events during the deploy.
+
+### 📚 Documentation
+- The README and the presence page explain how htmx's pause of hidden tabs affects streams and presence.
 
 ## 0.2.0 (2026-11-17)
 
