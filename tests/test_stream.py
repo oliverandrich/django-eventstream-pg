@@ -57,9 +57,13 @@ def signed(event_id: int, *topics: str) -> str:
 
 
 def terminate_listener() -> None:
-    """Ends every hub's LISTEN session, as a database restart would."""
+    """Ends every hub's LISTEN session on the test database, as a database restart would."""
+    # current_database(): other projects on the same server keep their listeners.
+    query = (
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE %s AND datname = current_database()"
+    )
     with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE %s", ["LISTEN %"])
+        cursor.execute(query, ["LISTEN %"])
 
 
 def notify(payload: str) -> None:
