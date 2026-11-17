@@ -66,7 +66,15 @@ The default policy opens `public:` topics to everyone and `user:<pk>` to that us
 Other kinds, such as `room:`, need a policy of their own; see [Who may read a topic](#who-may-read-a-topic).
 
 htmx swaps each message. Elements with `hx-swap-oob` or `<hx-partial>` update the page anywhere.
-Give list items stable ids, so an event delivered twice replaces its element instead of adding one.
+A stream sends no event twice; a reconnect resumes after the browser's `Last-Event-ID`.
+A page can still show an element before its stream delivers the same event.
+The hub's catch-up after a lost `LISTEN` connection is one such case.
+htmx 4 appends with `beforeend` without comparing ids.
+A target that skips an existing element prevents the second copy:
+
+```html
+<ul hx-swap-oob='beforeend target:"#news:not(:has(> #news-7))"'><li id="news-7">Hi</li></ul>
+```
 
 ### From async code
 
