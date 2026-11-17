@@ -162,6 +162,12 @@ The events from the time without access then stay unread.
 Run `manage.py prune_stream_events` regularly, for example hourly; it deletes events older than
 `PG_SSE["RETENTION_HOURS"]` (default 24).
 
+htmx's `hx-sse` closes the stream of a hidden tab and reconnects when the tab is visible again.
+The replay then delivers what the tab missed, in order.
+A tab hidden for longer than the retention misses the events pruned meanwhile.
+More than 500 missed events end the stream after one batch, and the next reconnect fetches the next batch.
+`hx-config='{"sse": {"pauseOnBackground": false}}'` on the stream element keeps a hidden tab's stream open.
+
 ## Signals
 
 `django_pg_sse.signals` sends `stream_opened` when a stream's subscription is in place.
