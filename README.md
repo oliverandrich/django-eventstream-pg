@@ -10,6 +10,8 @@ open browsers of a topic, with replay after a reconnect. No Redis, no message br
 
 Built for [htmx 4](https://four.htmx.org) and its `hx-sse` extension, but any SSE client works.
 
+[django-pg-sse-demo](https://github.com/oliverandrich/django-pg-sse-demo) is a small chat built on django-pg-sse, htmx 4 and daisyUI.
+
 ## Requirements
 
 - Python 3.12 or newer, Django 5.2 or newer
