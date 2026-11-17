@@ -65,6 +65,18 @@ The browsers reconnect to the new workers and replay what they missed.
 
 granian's `--workers-lifetime` restarts a worker after a set time, which ends the worker's streams.
 
+### Concurrent streams
+
+Every open stream is a request that does not finish.
+granian handles at most `--backpressure` requests per worker at once.
+Its default is the backlog of 1024 divided by the workers.
+So one worker holds 1024 streams, and each of four workers holds 256.
+Further connections wait, and a client may give up before it gets a turn.
+Raise the limit for many open tabs, such as `--backpressure 8192` or `GRANIAN_BACKPRESSURE=8192`.
+Each stream also holds a file descriptor, so `ulimit -n` must allow as many.
+
+In a load test, one granian worker held 2000 streams with `--backpressure 8192` and delivered every message.
+
 ## Database
 
 ### Connections
