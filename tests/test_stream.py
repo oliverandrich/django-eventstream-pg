@@ -135,7 +135,7 @@ class StreamTest(StreamTestCase):
     @stops_the_hub
     async def test_returns_its_connection_after_the_response_middleware(self):
         # Middleware such as SESSION_SAVE_EVERY_REQUEST queries after the view returns.
-        with mock.patch.object(views, "connection") as view_connection:
+        with mock.patch.object(signals, "connection") as view_connection:
             response = await AsyncClient().get("/events/?topic=public:news")
             view_connection.close.assert_not_called()
             await asyncio.wait_for(anext(content_of(response)), 5)
@@ -185,6 +185,42 @@ class StreamTest(StreamTestCase):
         with self.assertRaises(RuntimeError):
             await hub.streams.fetch(sql.SQL("SELECT 1"), [])
         self.assertIsNone(hub.streams.pool)
+
+    async def test_stop_runs_its_callbacks_before_the_pool_closes(self):
+        # The presence tracker writes through the pool until it stops.
+        hub = hub_module.Hub()
+        await hub.streams.fetch(sql.SQL("SELECT 1"), [])
+        pool_open: list[bool] = []
+
+        async def callback() -> None:
+            pool_open.append(not hub.streams.closed)
+
+        hub.on_stop.append(callback)
+        await hub.stop()
+        self.assertEqual(pool_open, [True])
+
+    async def test_a_failing_callback_still_closes_the_connections(self):
+        hub = hub_module.Hub()
+        await hub.streams.fetch(sql.SQL("SELECT 1"), [])
+
+        async def fail() -> None:
+            raise RuntimeError
+
+        hub.on_stop.append(fail)
+        with self.assertRaises(RuntimeError):
+            await hub.stop()
+        self.assertTrue(hub.streams.closed)
+        self.assertIsNone(hub.streams.pool)
+
+    async def test_get_hub_can_look_without_starting_one(self):
+        # A stream that closes after its hub stopped must not start another.
+        self.assertIsNone(hub_module.get_hub(create=False))
+        hub = hub_module.get_hub()
+        try:
+            self.assertIs(hub_module.get_hub(create=False), hub)
+        finally:
+            await hub.stop()
+        self.assertIsNone(hub_module.get_hub(create=False))
 
     async def test_a_closed_connection_reconnects(self):
         # A stream may outlive Hub.stop(), as at loop shutdown.
@@ -949,7 +985,7 @@ class SignalsTest(StreamTestCase):
 
         signals.stream_opened.connect(note, weak=False)
         self.addCleanup(signals.stream_opened.disconnect, note)
-        with mock.patch.object(views, "_close_connection", side_effect=lambda: calls.append("close")):
+        with mock.patch.object(signals, "close_connection", side_effect=lambda: calls.append("close")):
             await self.open_stream("public:news")
         self.assertEqual(calls, ["close", "receiver", "close"])
 

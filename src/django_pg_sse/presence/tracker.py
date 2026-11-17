@@ -6,7 +6,6 @@ Changes for one topic and identity hold an advisory lock, so two workers never b
 
 import asyncio
 import logging
-import weakref
 from typing import Any, cast
 
 from asgiref.sync import sync_to_async
@@ -16,13 +15,12 @@ from django.utils.module_loading import import_string
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from django_pg_sse import conf
-from django_pg_sse.hub import Connection, Hub, _fetch, _Pool, get_hub, hub_database
+from django_pg_sse import conf, signals
+from django_pg_sse.hub import Hub, StreamPool, Transaction, get_hub, hub_database
 from django_pg_sse.models import TOPIC_MAX_LENGTH
 from django_pg_sse.presence import Presence, presence_changed
 from django_pg_sse.presence.models import PresenceEntry
 from django_pg_sse.signals import StreamInfo
-from django_pg_sse.views import _close_connection
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +48,10 @@ PAIRS = "(topic, identity) IN (SELECT * FROM unnest(%s::text[], %s::text[]))"
 class Tracker:
     """The streams of one event loop that presence tracks, and the tasks that keep them current."""
 
-    def __init__(self) -> None:
-        # Bound by the first join: an open stream has a running hub.
-        self.hub: Hub | None = None
+    def __init__(self, hub: Hub) -> None:
+        self.hub = hub
+        # The hub stops its tracker before it closes the pool the tracker writes through.
+        hub.on_stop.append(self.stop)
         # The rows of each tracked stream, for the heartbeat.
         self.streams: dict[str, list[Row]] = {}
         # Streams that closed since the last batch of closes went out.
@@ -61,6 +60,7 @@ class Tracker:
         self.closer: asyncio.Task[None] | None = None
         self.sweeper: asyncio.Task[None] | None = None
         self.sweep_due = False
+        self.stopped = False
 
     async def join(self, info: StreamInfo) -> None:
         """Track `info`'s presence topics and report the identity on each topic it was absent from."""
@@ -69,19 +69,18 @@ class Tracker:
             return
         identity_function = import_string(conf.get("PRESENCE_IDENTITY"))
         # The identity function may read the session, which loads from the database.
-        # views._send closes the request thread's connection after this receiver.
+        # signals.asend() closes the request thread's connection after this receiver.
         found = await sync_to_async(identity_function)(info.request)
-        if found is None:
+        # Hub.stop() may have stopped this tracker while the identity function ran.
+        if found is None or self.stopped:
             return
         identity, meta = found
-        pool = self._pool(start=True)
-        assert pool is not None
         rows = [(info.id, topic, identity, meta) for topic in topics]
         # Registered first: a cancellation after the commit must still let leave() close the rows.
         self.streams[info.id] = rows
         if self.heartbeat is None or self.heartbeat.done():
             self.heartbeat = asyncio.get_running_loop().create_task(self._beat())
-        await _report(await _write(pool, rows), joined=True)
+        await _report(await _write(self.hub.streams, rows), joined=True)
 
     async def leave(self, info: StreamInfo) -> None:
         """Mark `info`'s rows closed; a sweep after the grace period reports the leave."""
@@ -92,61 +91,51 @@ class Tracker:
         if self.closer is None or self.closer.done():
             self.closer = asyncio.get_running_loop().create_task(self._close())
 
-    async def sweep(self, *, start: bool = True) -> None:
-        """Delete closed rows past the grace period and expired ones; report identities without rows left.
-
-        `start` binds a tracker without streams to the loop's hub, such as in a test.
-        """
-        if (pool := self._pool(start=start)) is None:
-            return
+    async def sweep(self) -> None:
+        """Delete closed rows past the grace period and expired ones; report identities without rows left."""
         limits = [GRACE_SECONDS, EXPIRE_SECONDS]
-        async with pool.connection() as conn, conn.transaction():
-            found = await _fetch(conn, _query(f"SELECT DISTINCT topic, identity FROM {{}} WHERE {GONE}"), limits)
+        async with self.hub.streams.transaction() as tx:
+            found = await tx.fetch(_query(f"SELECT DISTINCT topic, identity FROM {{}} WHERE {GONE}"), limits)
             pairs = cast(list[Pair], found)
             if not pairs:
                 return
-            await _lock(conn, pairs)
+            await _lock(tx, pairs)
             # A sweep that waited for the lock finds the rows another sweep already deleted gone.
-            deleted = await _fetch(
-                conn,
+            deleted = await tx.fetch(
                 _query(f"DELETE FROM {{}} WHERE {GONE} AND {PAIRS} RETURNING topic, identity, meta"),
                 [*limits, *_columns(pairs)],
             )
-            still_present = await _present_pairs(conn, pairs)
+            still_present = await _present_pairs(tx, pairs)
         left = {(topic, identity): meta for topic, identity, meta in deleted if (topic, identity) not in still_present}
         await _report(left, joined=False)
 
     async def stop(self) -> None:
-        """Cancel the heartbeat and pending closes, such as before the hub stops."""
+        """Cancel the heartbeat and pending closes, and mark every stream of this tracker closed.
+
+        Hub.stop() calls it before the pool closes. Other workers then report the leaves after the grace period.
+        """
+        self.stopped = True
         tasks = [task for task in (self.heartbeat, self.closer, self.sweeper) if task is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        streams = [*self.streams, *self.closing]
         self.streams.clear()
         self.closing.clear()
-        loop = asyncio.get_running_loop()
-        if _trackers.get(loop) is self:
-            del _trackers[loop]
-
-    def _pool(self, *, start: bool) -> _Pool | None:
-        # A stopped hub's pool refuses to reopen; a new one would stay open with nothing to close it.
-        if self.hub is None or self.hub.streams.closed:
-            if not start:
-                return None
-            self.hub = get_hub()
-        return self.hub.streams
+        if streams:
+            try:
+                await self.hub.streams.fetch(_CLOSE, [streams])
+            except Exception:
+                # The rows expire without a heartbeat instead.
+                logger.warning("Marking presence streams closed at stop failed.", exc_info=True)
 
     async def _close(self) -> None:
         while self.closing:
             # One loop turn lets closes of the same moment join this batch.
             await asyncio.sleep(0)
             streams, self.closing = list(self.closing), set()
-            if (pool := self._pool(start=False)) is None:
-                return
             try:
-                await pool.fetch(
-                    _query("UPDATE {} SET closed_at = now() WHERE stream = ANY(%s) RETURNING id"), [streams]
-                )
+                await self.hub.streams.fetch(_CLOSE, [streams])
             except Exception:
                 # The rows expire without a heartbeat, and a later sweep reports the leave.
                 logger.warning("Marking closed presence streams failed.", exc_info=True)
@@ -165,18 +154,16 @@ class Tracker:
     async def _beat(self) -> None:
         while self.streams:
             await asyncio.sleep(HEARTBEAT_SECONDS)
-            if (pool := self._pool(start=False)) is None:
-                return
             try:
-                await self._refresh(pool)
+                await self._refresh()
             except Exception:
                 logger.warning("The presence heartbeat failed; retrying.", exc_info=True)
                 continue
             await self._sweep_logged()
 
-    async def _refresh(self, pool: _Pool) -> None:
+    async def _refresh(self) -> None:
         # A plain update without locks for the rows that exist, which is all of them as a rule.
-        refreshed = await pool.fetch(
+        refreshed = await self.hub.streams.fetch(
             _query(
                 "UPDATE {} SET last_seen = now() WHERE stream = ANY(%s) AND closed_at IS NULL RETURNING stream, topic"
             ),
@@ -185,28 +172,27 @@ class Tracker:
         found = {(stream, topic) for stream, topic in refreshed}
         # A crash or another worker's sweep removed the rest; they come back, and their readers join again.
         missing = [row for rows in self.streams.values() for row in rows if (row[0], row[1]) not in found]
-        await _report(await _write(pool, missing), joined=True)
+        await _report(await _write(self.hub.streams, missing), joined=True)
 
     async def _sweep_logged(self) -> None:
         # A failed sweep leaves its rows for the next one.
         try:
-            await self.sweep(start=False)
+            await self.sweep()
         except Exception:
             logger.warning("The presence sweep failed; the next one retries.", exc_info=True)
 
 
-async def _write(pool: _Pool, rows: list[Row]) -> dict[Pair, dict[str, Any]]:
+async def _write(pool: StreamPool, rows: list[Row]) -> dict[Pair, dict[str, Any]]:
     """Insert or refresh `rows`; return the identities that had no row on their topic before."""
     if not rows:
         return {}
     pairs = sorted({(topic, identity) for _, topic, identity, _ in rows})
-    async with pool.connection() as conn, conn.transaction():
-        await _lock(conn, pairs)
+    async with pool.transaction() as tx:
+        await _lock(tx, pairs)
         # Rows in their grace period count: the identity is still present.
-        present_before = await _present_pairs(conn, pairs)
+        present_before = await _present_pairs(tx, pairs)
         streams, topics, identities, metas = (list(column) for column in zip(*rows, strict=True))
-        await _fetch(
-            conn,
+        await tx.fetch(
             _query(
                 "INSERT INTO {} (stream, topic, identity, meta, last_seen) "
                 "SELECT stream, topic, identity, meta, now() "
@@ -218,9 +204,9 @@ async def _write(pool: _Pool, rows: list[Row]) -> dict[Pair, dict[str, Any]]:
     return {(topic, identity): meta for _, topic, identity, meta in rows if (topic, identity) not in present_before}
 
 
-async def _present_pairs(conn: Connection, pairs: list[Pair]) -> set[Pair]:
+async def _present_pairs(tx: Transaction, pairs: list[Pair]) -> set[Pair]:
     """Those of `pairs` with at least one row."""
-    rows = await _fetch(conn, _query(f"SELECT DISTINCT topic, identity FROM {{}} WHERE {PAIRS}"), _columns(pairs))
+    rows = await tx.fetch(_query(f"SELECT DISTINCT topic, identity FROM {{}} WHERE {PAIRS}"), _columns(pairs))
     return {(topic, identity) for topic, identity in rows}
 
 
@@ -233,10 +219,9 @@ def _columns(pairs: list[Pair]) -> list[list[str]]:
     return [[topic for topic, _ in pairs], [identity for _, identity in pairs]]
 
 
-async def _lock(conn: Connection, pairs: list[Pair]) -> None:
+async def _lock(tx: Transaction, pairs: list[Pair]) -> None:
     # One statement, in the order of the lock keys: string order may differ when two hashes collide.
-    await _fetch(
-        conn,
+    await tx.fetch(
         sql.SQL(
             "SELECT pg_advisory_xact_lock(a, b) FROM (SELECT DISTINCT hashtext(topic) AS a, hashtext(identity) AS b "
             "FROM unnest(%s::text[], %s::text[]) AS pair(topic, identity) ORDER BY a, b) AS keys"
@@ -251,17 +236,17 @@ async def _report(changes: dict[Pair, dict[str, Any]], *, joined: bool) -> None:
         by_topic.setdefault(topic, []).append(Presence(identity, meta))
     for topic, entries in sorted(by_topic.items()):
         changed = tuple(entries)
-        await presence_changed.asend_robust(
-            sender=Presence, topic=topic, joined=changed if joined else (), left=() if joined else changed
+        await signals.asend(
+            presence_changed, Presence, topic=topic, joined=changed if joined else (), left=() if joined else changed
         )
-    if by_topic:
-        # A sync receiver ran in a thread of its own and may have opened a connection there.
-        await sync_to_async(_close_connection)()
 
 
 def _query(text: str) -> sql.Composed:
     # text is a literal from this module, never user input.
     return sql.SQL(text).format(sql.Identifier(PresenceEntry._meta.db_table))  # pyright: ignore[reportArgumentType]
+
+
+_CLOSE = _query("UPDATE {} SET closed_at = now() WHERE stream = ANY(%s) AND closed_at IS NULL RETURNING id")
 
 
 def present(topic: str) -> list[Presence]:
@@ -290,15 +275,17 @@ async def stream_opened_receiver(sender: Any, stream: StreamInfo, **kwargs: Any)
 
 async def stream_closed_receiver(sender: Any, stream: StreamInfo, **kwargs: Any) -> None:  # noqa: ARG001
     """Connected to stream_closed by the app config."""
-    await get_tracker().leave(stream)
+    # create=False: the stream may close after its hub stopped, and a new hub would have nothing to close.
+    if (hub := get_hub(create=False)) is not None and (tracker := hub.extensions.get(_EXTENSION)) is not None:
+        await tracker.leave(stream)
 
 
-_trackers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Tracker] = weakref.WeakKeyDictionary()
+_EXTENSION = "django_pg_sse.presence"
 
 
 def get_tracker() -> Tracker:
-    """The tracker of the running event loop."""
-    loop = asyncio.get_running_loop()
-    if loop not in _trackers:
-        _trackers[loop] = Tracker()
-    return _trackers[loop]
+    """The tracker of the running event loop's hub; it lives as long as the hub."""
+    hub = get_hub()
+    if _EXTENSION not in hub.extensions:
+        hub.extensions[_EXTENSION] = Tracker(hub)
+    return hub.extensions[_EXTENSION]

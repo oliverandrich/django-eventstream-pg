@@ -5,8 +5,8 @@ import contextlib
 import logging
 import os
 import weakref
-from collections.abc import AsyncGenerator, Mapping, Sequence
-from typing import Any
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from typing import Any, overload
 
 import psycopg
 from django.db import DEFAULT_DB_ALIAS, connections
@@ -107,7 +107,20 @@ class _Connection:
             await connection.close()
 
 
-class _Pool:
+class Transaction:
+    """One open transaction of StreamPool.transaction()."""
+
+    def __init__(self, connection: Connection) -> None:
+        self.connection = connection
+
+    async def fetch(
+        self, query: sql.SQL | sql.Composed, params: Sequence[Any] | Mapping[str, Any]
+    ) -> list[tuple[Any, ...]]:
+        """The rows of `query`; it gives up after QUERY_TIMEOUT with OperationalError."""
+        return await _fetch(self.connection, query, params)
+
+
+class StreamPool:
     """Up to STREAM_CONNECTIONS connections outside Django's pool, opened on first use."""
 
     def __init__(self) -> None:
@@ -139,6 +152,12 @@ class _Pool:
                 await pool.open()
                 self.pool = pool
             return pool
+
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[Transaction, None]:
+        """A transaction on one pooled connection; each of its queries gives up after QUERY_TIMEOUT."""
+        async with self.connection() as conn, conn.transaction():
+            yield Transaction(conn)
 
     async def fetch(self, query: sql.SQL | sql.Composed, params: list[Any]) -> list[tuple[Any, ...]]:
         async with self.connection() as conn:
@@ -181,9 +200,13 @@ class Hub:
         self.verification: asyncio.Task[None] | None = None
         self.last_id: int | None = None
         self.task: asyncio.Task[None] | None = None
+        # Awaited by stop() before the connections close, such as the presence tracker's stop().
+        self.on_stop: list[Callable[[], Awaitable[None]]] = []
+        # State of optional apps that lives as long as the hub, such as the presence tracker.
+        self.extensions: dict[str, Any] = {}
         self.live = _Connection()
         # Replays run in parallel here, apart from live delivery.
-        self.streams = _Pool()
+        self.streams = StreamPool()
 
     def subscribe(self, topics: list[str], owner: Owner) -> Queue:
         """A queue that receives the events of `topics` and the closes of `owner`.
@@ -238,9 +261,13 @@ class Hub:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.task
         try:
-            await self.live.close()
+            for callback in self.on_stop:
+                await callback()
         finally:
-            await self.streams.close()
+            try:
+                await self.live.close()
+            finally:
+                await self.streams.close()
 
     async def _listen(self) -> None:
         delays = RECONNECT_DELAYS
@@ -341,14 +368,14 @@ class Hub:
 
 
 async def _replay(
-    connection: _Connection | _Pool, topics: list[str], after_id: int, up_to: int | None = None
+    connection: _Connection | StreamPool, topics: list[str], after_id: int, up_to: int | None = None
 ) -> list[Message]:
     query = _select("WHERE topic = ANY(%s) AND id > %s AND (%s::bigint IS NULL OR id <= %s) ORDER BY id LIMIT %s")
     rows = await connection.fetch(query, [topics, after_id, up_to, up_to, REPLAY_BATCH])
     return [Message(*row) for row in rows]
 
 
-async def _newest(connection: _Connection | _Pool) -> int:
+async def _newest(connection: _Connection | StreamPool) -> int:
     rows = await connection.fetch(sql.SQL("SELECT coalesce(max(id), 0) FROM {}").format(_table()), [])
     return rows[0][0]
 
@@ -418,9 +445,16 @@ def _select(condition: str) -> sql.Composed:
 _hubs: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Hub] = weakref.WeakKeyDictionary()
 
 
-def get_hub() -> Hub:
-    """The hub of the running event loop. Each ASGI worker runs one loop."""
+@overload
+def get_hub() -> Hub: ...
+@overload
+def get_hub(*, create: bool) -> Hub | None: ...
+def get_hub(*, create: bool = True) -> Hub | None:
+    """The hub of the running event loop. Each ASGI worker runs one loop.
+
+    With create=False, None if the loop has no hub, such as after Hub.stop().
+    """
     loop = asyncio.get_running_loop()
-    if loop not in _hubs:
+    if loop not in _hubs and create:
         _hubs[loop] = Hub()
-    return _hubs[loop]
+    return _hubs.get(loop)

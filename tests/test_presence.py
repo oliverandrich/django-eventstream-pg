@@ -1,7 +1,5 @@
 import asyncio
 import contextlib
-import functools
-from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest import mock
 
@@ -9,7 +7,7 @@ from asgiref.sync import sync_to_async
 from django.contrib.auth.models import User
 from django.db import connection
 from django.http import HttpRequest
-from django.test import AsyncClient, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings
+from django.test import AsyncClient, RequestFactory, SimpleTestCase, override_settings
 from psycopg import sql
 
 from django_pg_sse import hub as hub_module
@@ -34,19 +32,6 @@ def name_from_session(request: HttpRequest) -> tuple[str, dict[str, Any]] | None
     assert session_key is not None
     # A digest: every reader of the topic sees the identity, and a session key would let them take over the session.
     return f"session:{digest(session_key)}", {"name": request.session["name"]}
-
-
-def stops_presence[T: TransactionTestCase](test: Callable[[T], Awaitable[None]]) -> Callable[[T], Awaitable[None]]:
-    """Stop the tracker before the hub, so no sweep runs on a closed pool."""
-
-    @functools.wraps(test)
-    async def wrapper(self: T) -> None:
-        try:
-            await test(self)
-        finally:
-            await tracker.get_tracker().stop()
-
-    return stops_the_hub(wrapper)
 
 
 @override_settings(PG_SSE=PRESENCE)
@@ -114,7 +99,7 @@ class PresenceTestCase(StreamTestCase):
 
 
 class JoinTest(PresenceTestCase):
-    @stops_presence
+    @stops_the_hub
     async def test_a_first_stream_joins_the_topic(self):
         client, user = await self.client_for("ada")
         await self.open_stream(ROOM, client=client)
@@ -123,7 +108,7 @@ class JoinTest(PresenceTestCase):
         self.assertEqual(await apresent(ROOM), [ada])
         self.assertEqual(await sync_to_async(present)(ROOM), [ada])
 
-    @stops_presence
+    @stops_the_hub
     async def test_a_second_tab_does_not_join_again(self):
         client, _ = await self.client_for("ada")
         await self.open_stream(ROOM, client=client)
@@ -131,7 +116,7 @@ class JoinTest(PresenceTestCase):
         self.assertEqual(len(self.changes), 1)
         self.assertEqual(len(await apresent(ROOM)), 1)
 
-    @stops_presence
+    @stops_the_hub
     async def test_tabs_opening_at_once_report_one_join(self):
         # Two workers may open streams of one identity at the same moment.
         user = await User.objects.acreate_user("ada")
@@ -139,14 +124,12 @@ class JoinTest(PresenceTestCase):
         # Four open pool connections, so the joins run in parallel rather than one after another.
         pool = hub_module.get_hub().streams
         await asyncio.gather(*(pool.fetch(sql.SQL("SELECT pg_sleep(0.2)"), []) for _ in infos))
-        trackers = [tracker.Tracker() for _ in infos]
-        try:
-            await asyncio.gather(*(each.join(info) for each, info in zip(trackers, infos, strict=True)))
-        finally:
-            await asyncio.gather(*(each.stop() for each in trackers))
+        # Four trackers stand in for four workers; Hub.stop() stops each.
+        trackers = [tracker.Tracker(hub_module.get_hub()) for _ in infos]
+        await asyncio.gather(*(each.join(info) for each, info in zip(trackers, infos, strict=True)))
         self.assertEqual(len(self.changes), 1)
 
-    @stops_presence
+    @stops_the_hub
     async def test_present_lists_each_identity_in_the_order_it_joined(self):
         ada_client, ada = await self.client_for("ada")
         grace_client, grace = await self.client_for("grace")
@@ -155,21 +138,21 @@ class JoinTest(PresenceTestCase):
         identities = [entry.identity for entry in await apresent(ROOM)]
         self.assertEqual(identities, [f"user:{ada.pk}", f"user:{grace.pk}"])
 
-    @stops_presence
+    @stops_the_hub
     async def test_topics_outside_presence_topics_write_nothing(self):
         client, _ = await self.client_for("ada")
         await self.open_stream("public:news", client=client)
         self.assertEqual(self.changes, [])
         self.assertEqual(await sync_to_async(self.rows)(), 0)
 
-    @stops_presence
+    @stops_the_hub
     async def test_a_stream_without_an_identity_is_not_tracked(self):
         # The default identity covers logged-in users only.
         await self.open_stream(ROOM)
         self.assertEqual(self.changes, [])
         self.assertEqual(await apresent(ROOM), [])
 
-    @stops_presence
+    @stops_the_hub
     async def test_the_identity_setting_tracks_visitors_without_an_account(self):
         client = AsyncClient()
         session = await client.asession()
@@ -182,7 +165,7 @@ class JoinTest(PresenceTestCase):
         assert session.session_key is not None
         self.assertEqual(joined.identity, f"session:{digest(session.session_key)}")
 
-    @stops_presence
+    @stops_the_hub
     async def test_a_topic_too_long_to_store_is_not_tracked(self):
         client, _ = await self.client_for("ada")
         with self.assertNoLogs("django.dispatch", "ERROR"):
@@ -191,7 +174,7 @@ class JoinTest(PresenceTestCase):
 
 
 class LeaveTest(PresenceTestCase):
-    @stops_presence
+    @stops_the_hub
     async def test_the_last_tab_leaves_after_the_grace_period(self):
         client, user = await self.client_for("ada")
         stream = await self.open_stream(ROOM, client=client)
@@ -202,7 +185,7 @@ class LeaveTest(PresenceTestCase):
         self.assertEqual(self.changes[1:], [(ROOM, (), (ada,))])
         self.assertEqual(await apresent(ROOM), [])
 
-    @stops_presence
+    @stops_the_hub
     async def test_closing_one_of_two_tabs_does_not_leave(self):
         client, _ = await self.client_for("ada")
         first = await self.open_stream(ROOM, client=client)
@@ -212,7 +195,7 @@ class LeaveTest(PresenceTestCase):
         self.assertEqual(len(self.changes), 1)
         self.assertEqual(len(await apresent(ROOM)), 1)
 
-    @stops_presence
+    @stops_the_hub
     async def test_a_reconnect_within_the_grace_period_changes_nothing(self):
         client, _ = await self.client_for("ada")
         stream = await self.open_stream(ROOM, client=client)
@@ -222,13 +205,13 @@ class LeaveTest(PresenceTestCase):
         self.assertEqual(len(self.changes), 1)
         self.assertEqual(len(await apresent(ROOM)), 1)
 
-    @stops_presence
+    @stops_the_hub
     async def test_a_join_cancelled_after_its_commit_still_leaves(self):
         # The client may disconnect while stream_opened receivers run.
         user = await User.objects.acreate_user("ada")
         info = self.info_for(user, 1)
-        own = tracker.Tracker()
-        pool = hub_module.get_hub().streams
+        own = tracker.Tracker(hub_module.get_hub())
+        pool = own.hub.streams
         connect = pool.connection
 
         @contextlib.asynccontextmanager
@@ -237,20 +220,17 @@ class LeaveTest(PresenceTestCase):
                 yield conn
             raise asyncio.CancelledError
 
-        try:
-            with (
-                mock.patch.object(pool, "connection", cancelled_after_commit),
-                self.assertRaises(asyncio.CancelledError),
-            ):
-                await own.join(info)
-            await own.leave(info)
-            await self.settle()
-        finally:
-            await own.stop()
+        with (
+            mock.patch.object(pool, "connection", cancelled_after_commit),
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            await own.join(info)
+        await own.leave(info)
+        await self.settle()
         self.assertEqual(await apresent(ROOM), [])
         self.assertEqual(await sync_to_async(self.rows)(), 0)
 
-    @stops_presence
+    @stops_the_hub
     async def test_many_closes_share_one_sweep(self):
         # A deploy or a proxy restart closes every stream at once.
         users = [await User.objects.acreate_user(f"user{n}") for n in range(10)]
@@ -277,19 +257,43 @@ class LeaveTest(PresenceTestCase):
         left = [entry for _, _, gone in self.changes for entry in gone]
         self.assertEqual(len(left), len(users))
 
-    @stops_presence
+    @stops_the_hub
+    async def test_a_stopped_tracker_ignores_a_late_join(self):
+        # Hub.stop() may run while a join waits for the identity function.
+        user = await User.objects.acreate_user("ada")
+        own = tracker.get_tracker()
+        await own.stop()
+        await own.join(self.info_for(user, 1))
+        self.assertEqual((own.streams, own.heartbeat), ({}, None))
+        self.assertEqual(await sync_to_async(self.rows)(), 0)
+
+    @stops_the_hub
+    async def test_stopping_closes_the_rows_of_its_streams(self):
+        # Other workers then report the leaves after the grace period, not after the expiry.
+        user = await User.objects.acreate_user("ada")
+        await tracker.get_tracker().join(self.info_for(user, 1))
+        await hub_module.get_hub().stop()
+
+        def open_rows() -> int:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT count(*) FROM django_pg_sse_presence WHERE closed_at IS NULL")
+                return cursor.fetchone()[0]
+
+        self.assertEqual(await sync_to_async(open_rows)(), 0)
+
+    @stops_the_hub
     async def test_a_stopped_hub_is_not_started_again(self):
         user = await User.objects.acreate_user("ada")
         info = self.info_for(user, 1)
-        own = tracker.get_tracker()
-        await own.join(info)
+        await tracker.get_tracker().join(info)
         await hub_module.get_hub().stop()
-        await own.leave(info)
+        # The stream closes after its hub stopped, as at loop shutdown.
+        await tracker.stream_closed_receiver(sender=StreamInfo, stream=info)
         self.assertNotIn(asyncio.get_running_loop(), hub_module._hubs)  # pyright: ignore[reportPrivateUsage]
 
 
 class ExpiryTest(PresenceTestCase):
-    @stops_presence
+    @stops_the_hub
     async def test_the_heartbeat_refills_an_emptied_table(self):
         # A crash empties an UNLOGGED table while the streams stay open.
         self.enterContext(mock.patch.object(tracker, "HEARTBEAT_SECONDS", 0.1))
@@ -306,32 +310,32 @@ class ExpiryTest(PresenceTestCase):
         with connection.cursor() as cursor:
             cursor.execute("TRUNCATE django_pg_sse_presence")
 
-    @stops_presence
+    @stops_the_hub
     async def test_rows_of_a_killed_worker_expire(self):
         await sync_to_async(self.insert_row)("user:99")
         await tracker.get_tracker().sweep()
         self.assertEqual(self.changes, [(ROOM, (), (Presence("user:99", {}),))])
         self.assertEqual(await apresent(ROOM), [])
 
-    @stops_presence
+    @stops_the_hub
     async def test_present_skips_rows_past_their_expiry(self):
         # A row stays until some worker sweeps it; present() must not wait for that.
         await sync_to_async(self.insert_row)("user:99")
         self.assertEqual(await apresent(ROOM), [])
 
-    @stops_presence
+    @stops_the_hub
     async def test_present_skips_rows_closed_past_the_grace_period(self):
         await sync_to_async(self.insert_row)("user:99", closed=True)
         self.assertEqual(await apresent(ROOM), [])
 
-    @stops_presence
+    @stops_the_hub
     async def test_concurrent_sweeps_report_a_leave_once(self):
         # Every worker sweeps; only one may report each leave.
         await sync_to_async(self.insert_row)("user:99")
         await asyncio.gather(*(tracker.get_tracker().sweep() for _ in range(4)))
         self.assertEqual(len(self.changes), 1)
 
-    @stops_presence
+    @stops_the_hub
     async def test_the_heartbeat_keeps_open_streams_present(self):
         self.enterContext(mock.patch.object(tracker, "HEARTBEAT_SECONDS", 0.1))
         self.enterContext(mock.patch.object(tracker, "EXPIRE_SECONDS", 1.0))

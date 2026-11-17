@@ -6,14 +6,13 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 
 from asgiref.sync import sync_to_async
-from django.db import connection, transaction
+from django.db import transaction
 from django.db.models import Max
-from django.dispatch import Signal as DjangoSignal
 from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseForbidden, StreamingHttpResponse
 from django.http.response import HttpResponseBase
 from django.utils.cache import add_never_cache_headers
 
-from django_pg_sse import conf
+from django_pg_sse import conf, signals
 from django_pg_sse import hub as hub_module
 from django_pg_sse.hub import Hub, get_hub
 from django_pg_sse.messages import (
@@ -101,7 +100,8 @@ async def _messages(  # noqa: PLR0913
     last_event_id: int | None,
     info: StreamInfo,
 ) -> AsyncGenerator[str, None]:
-    await sync_to_async(_close_connection)()
+    # Closed after the response middleware, which may query, such as for SESSION_SAVE_EVERY_REQUEST.
+    await sync_to_async(signals.close_connection)()
     # Subscribed here, not in the view: a generator that never starts skips its finally.
     topics = list(info.topics)
     queue = hub.subscribe(topics, owner)
@@ -121,7 +121,7 @@ async def _messages(  # noqa: PLR0913
         sent = last_event_id or 0
         # Set first: a disconnect during the receivers must still send stream_closed.
         opened = True
-        await _send(stream_opened, info)
+        await signals.asend(stream_opened, StreamInfo, stream=info)
         yield CONNECTED
         # A close among the events since authorisation reached the hub before this queue existed.
         missed = (hub.last_id or 0) > authorized_at
@@ -154,16 +154,7 @@ async def _messages(  # noqa: PLR0913
         # Only a stream that began stream_opened sends stream_closed, so the two come in pairs.
         # shield: a second cancellation, such as at shutdown, must not cut the receivers short.
         if opened:
-            await asyncio.shield(_send(stream_closed, info))
-
-
-async def _send(signal: DjangoSignal, info: StreamInfo) -> None:
-    if not signal.has_listeners(StreamInfo):
-        return
-    # asend_robust() logs a failing receiver to django.dispatch, and the stream goes on.
-    await signal.asend_robust(sender=StreamInfo, stream=info)
-    # A sync receiver ran in the request's thread and may have opened its connection again.
-    await sync_to_async(_close_connection)()
+            await asyncio.shield(signals.asend(stream_closed, StreamInfo, stream=info))
 
 
 async def _with_keepalives(messages: AsyncGenerator[str, None]) -> AsyncIterator[str]:
@@ -197,10 +188,3 @@ async def _with_keepalives(messages: AsyncGenerator[str, None]) -> AsyncIterator
 async def _revoked_since(hub: Hub, owner: Owner, event_id: int) -> bool:
     # Anonymous streams have no close topics, so no close can name them.
     return bool(owner.close_topics) and await hub.any_since(list(owner.close_topics), event_id)
-
-
-def _close_connection() -> None:
-    # Under ASGI the request's thread keeps its connection until the client leaves.
-    # Closing it after the response middleware returns it to the pool.
-    # The proxy resolves here, in that thread, not in the event loop's.
-    connection.close()
