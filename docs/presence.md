@@ -58,11 +58,12 @@ PG_SSE = {
 ## Showing who is here
 
 `present(topic)` returns the readers of a topic as `Presence` objects, in the order they joined.
+Each reader carries the meta of its newest stream, such as a name changed since it joined.
 It skips expired rows and rows closed past the grace period, even before a sweep deletes them.
 `apresent(topic)` does the same in async code.
 
-`presence_changed` is sent when a reader joins or leaves a topic.
-Its arguments are `topic`, `joined` and `left`, two tuples of `Presence`, one of them empty.
+`presence_changed` is sent when a reader joins or leaves a topic, or opens a stream with a new meta.
+Its arguments are `topic`, `joined`, `left` and `updated`, tuples of `Presence`; only one of them is not empty.
 A receiver renders the new state and broadcasts it to the topic:
 
 ```python

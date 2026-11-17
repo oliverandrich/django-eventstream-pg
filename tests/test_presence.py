@@ -38,10 +38,14 @@ def name_from_session(request: HttpRequest) -> tuple[str, dict[str, Any]] | None
 class PresenceTestCase(StreamTestCase):
     def setUp(self) -> None:
         self.changes: list[tuple[str, tuple[Presence, ...], tuple[Presence, ...]]] = []
+        self.updates: list[tuple[str, tuple[Presence, ...]]] = []
         self.streams: list[Stream] = []
 
         def receiver(sender: Any, topic: str, joined: Any, left: Any, **kwargs: Any) -> None:  # noqa: ARG001
-            self.changes.append((topic, joined, left))
+            if updated := kwargs.get("updated"):
+                self.updates.append((topic, updated))
+            else:
+                self.changes.append((topic, joined, left))
 
         presence_changed.connect(receiver, weak=False)
         self.addCleanup(presence_changed.disconnect, receiver)
@@ -290,6 +294,45 @@ class LeaveTest(PresenceTestCase):
         # The stream closes after its hub stopped, as at loop shutdown.
         await tracker.stream_closed_receiver(sender=StreamInfo, stream=info)
         self.assertNotIn(asyncio.get_running_loop(), hub_module._hubs)  # pyright: ignore[reportPrivateUsage]
+
+
+class UpdateTest(PresenceTestCase):
+    async def rename(self, user: User, name: str) -> None:
+        user.username = name
+        await user.asave()
+
+    @stops_the_hub
+    async def test_present_shows_the_newest_meta_in_the_first_place(self):
+        ada = await User.objects.acreate_user("ada")
+        grace = await User.objects.acreate_user("grace")
+        own = tracker.get_tracker()
+        await own.join(self.info_for(ada, 1))
+        await own.join(self.info_for(grace, 2))
+        await self.rename(ada, "ada lovelace")
+        await own.join(self.info_for(ada, 3))
+        self.assertEqual(
+            await apresent(ROOM),
+            [Presence(f"user:{ada.pk}", {"name": "ada lovelace"}), Presence(f"user:{grace.pk}", {"name": "grace"})],
+        )
+
+    @stops_the_hub
+    async def test_a_changed_meta_is_reported_as_updated(self):
+        # A rename reconnects within the grace period, so no leave and join tell the other readers.
+        ada = await User.objects.acreate_user("ada")
+        own = tracker.get_tracker()
+        await own.join(self.info_for(ada, 1))
+        await self.rename(ada, "ada lovelace")
+        await own.join(self.info_for(ada, 2))
+        self.assertEqual(len(self.changes), 1)
+        self.assertEqual(self.updates, [(ROOM, (Presence(f"user:{ada.pk}", {"name": "ada lovelace"}),))])
+
+    @stops_the_hub
+    async def test_an_unchanged_meta_reports_nothing(self):
+        ada = await User.objects.acreate_user("ada")
+        own = tracker.get_tracker()
+        await own.join(self.info_for(ada, 1))
+        await own.join(self.info_for(ada, 2))
+        self.assertEqual((len(self.changes), self.updates), (1, []))
 
 
 class ExpiryTest(PresenceTestCase):

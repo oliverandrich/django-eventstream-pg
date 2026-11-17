@@ -22,8 +22,9 @@ class Presence:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
-#: Sent with sender=Presence, topic, joined and left, in the worker that saw the change.
-#: joined and left are tuples of Presence; one of them is empty.
+#: Sent with sender=Presence, topic, joined, left and updated, in the worker that saw the change.
+#: Each is a tuple of Presence, and only one of them is not empty.
+#: updated holds readers who opened a stream with a new meta, such as a new name.
 presence_changed = Signal()
 
 

@@ -197,7 +197,7 @@ A receiver that raises is logged to `django.dispatch`, and the stream goes on.
 ## Presence
 
 The optional app `django_pg_sse.presence` tracks who has a topic open, such as the members of a chat room.
-`present(topic)` lists the readers, and the `presence_changed` signal reports joins and leaves.
+`present(topic)` lists the readers, and the `presence_changed` signal reports joins, leaves and new meta.
 A reader with several tabs counts once, and a reconnect within 5 seconds changes nothing.
 See [Presence](https://django-pg-sse.readthedocs.io/en/latest/presence.html).
 

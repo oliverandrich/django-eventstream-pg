@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+### 🚀 Features
+- **`presence_changed` reports `updated`**: a reader whose new stream carries a changed meta, such as a new name.
+  `present()` shows that newest meta in the reader's first place.
+
 ## 0.2.0 (2026-11-17)
 
 ### 🚀 Features

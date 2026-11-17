@@ -6,7 +6,7 @@ Changes for one topic and identity hold an advisory lock, so two workers never b
 
 import asyncio
 import logging
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from asgiref.sync import sync_to_async
 from django.db.models import BooleanField
@@ -34,6 +34,8 @@ GRACE_SECONDS = 5
 type Pair = tuple[str, str]
 # stream, topic, identity, meta
 type Row = tuple[str, str, str, dict[str, Any]]
+# The meta of each changed topic and identity.
+type Changes = dict[Pair, dict[str, Any]]
 
 # Rows a sweep deletes and present() skips; the parameters are GRACE_SECONDS and EXPIRE_SECONDS.
 # IS NOT NULL keeps the condition false rather than NULL for open streams, so its negation works.
@@ -80,7 +82,9 @@ class Tracker:
         self.streams[info.id] = rows
         if self.heartbeat is None or self.heartbeat.done():
             self.heartbeat = asyncio.get_running_loop().create_task(self._beat())
-        await _report(await _write(self.hub.streams, rows), joined=True)
+        joined, updated = await _write(self.hub.streams, rows)
+        await _report(joined, "joined")
+        await _report(updated, "updated")
 
     async def leave(self, info: StreamInfo) -> None:
         """Mark `info`'s rows closed; a sweep after the grace period reports the leave."""
@@ -105,9 +109,9 @@ class Tracker:
                 _query(f"DELETE FROM {{}} WHERE {GONE} AND {PAIRS} RETURNING topic, identity, meta"),
                 [*limits, *_columns(pairs)],
             )
-            still_present = await _present_pairs(tx, pairs)
+            still_present = await _newest_metas(tx, pairs)
         left = {(topic, identity): meta for topic, identity, meta in deleted if (topic, identity) not in still_present}
-        await _report(left, joined=False)
+        await _report(left, "left")
 
     async def stop(self) -> None:
         """Cancel the heartbeat and pending closes, and mark every stream of this tracker closed.
@@ -172,7 +176,9 @@ class Tracker:
         found = {(stream, topic) for stream, topic in refreshed}
         # A crash or another worker's sweep removed the rest; they come back, and their readers join again.
         missing = [row for rows in self.streams.values() for row in rows if (row[0], row[1]) not in found]
-        await _report(await _write(self.hub.streams, missing), joined=True)
+        joined, updated = await _write(self.hub.streams, missing)
+        await _report(joined, "joined")
+        await _report(updated, "updated")
 
     async def _sweep_logged(self) -> None:
         # A failed sweep leaves its rows for the next one.
@@ -182,15 +188,18 @@ class Tracker:
             logger.warning("The presence sweep failed; the next one retries.", exc_info=True)
 
 
-async def _write(pool: StreamPool, rows: list[Row]) -> dict[Pair, dict[str, Any]]:
-    """Insert or refresh `rows`; return the identities that had no row on their topic before."""
+async def _write(pool: StreamPool, rows: list[Row]) -> tuple[Changes, Changes]:
+    """Insert or refresh `rows`.
+
+    Return the identities that had no row on their topic before, and those whose meta changed.
+    """
     if not rows:
-        return {}
+        return {}, {}
     pairs = sorted({(topic, identity) for _, topic, identity, _ in rows})
     async with pool.transaction() as tx:
         await _lock(tx, pairs)
         # Rows in their grace period count: the identity is still present.
-        present_before = await _present_pairs(tx, pairs)
+        before = await _newest_metas(tx, pairs)
         streams, topics, identities, metas = (list(column) for column in zip(*rows, strict=True))
         await tx.fetch(
             _query(
@@ -201,13 +210,23 @@ async def _write(pool: StreamPool, rows: list[Row]) -> dict[Pair, dict[str, Any]
             ),
             [streams, topics, identities, [Jsonb(meta) for meta in metas]],
         )
-    return {(topic, identity): meta for _, topic, identity, meta in rows if (topic, identity) not in present_before}
+    written = {(topic, identity): meta for _, topic, identity, meta in rows}
+    joined = {pair: meta for pair, meta in written.items() if pair not in before}
+    # A reader with a new meta, such as a new name, reconnects within the grace period: no join tells the others.
+    updated = {pair: meta for pair, meta in written.items() if pair in before and before[pair] != meta}
+    return joined, updated
 
 
-async def _present_pairs(tx: Transaction, pairs: list[Pair]) -> set[Pair]:
-    """Those of `pairs` with at least one row."""
-    rows = await tx.fetch(_query(f"SELECT DISTINCT topic, identity FROM {{}} WHERE {PAIRS}"), _columns(pairs))
-    return {(topic, identity) for topic, identity in rows}
+async def _newest_metas(tx: Transaction, pairs: list[Pair]) -> dict[Pair, dict[str, Any]]:
+    """The meta of the newest row of each of `pairs` that has a row."""
+    rows = await tx.fetch(
+        _query(
+            f"SELECT DISTINCT ON (topic, identity) topic, identity, meta FROM {{}} WHERE {PAIRS} "
+            "ORDER BY topic, identity, id DESC"
+        ),
+        _columns(pairs),
+    )
+    return {(topic, identity): meta for topic, identity, meta in rows}
 
 
 def _tracked(topic: str) -> bool:
@@ -230,15 +249,14 @@ async def _lock(tx: Transaction, pairs: list[Pair]) -> None:
     )
 
 
-async def _report(changes: dict[Pair, dict[str, Any]], *, joined: bool) -> None:
+async def _report(changes: Changes, kind: Literal["joined", "left", "updated"]) -> None:
     by_topic: dict[str, list[Presence]] = {}
     for (topic, identity), meta in changes.items():
         by_topic.setdefault(topic, []).append(Presence(identity, meta))
     for topic, entries in sorted(by_topic.items()):
-        changed = tuple(entries)
-        await signals.asend(
-            presence_changed, Presence, topic=topic, joined=changed if joined else (), left=() if joined else changed
-        )
+        named: dict[str, tuple[Presence, ...]] = {"joined": (), "left": (), "updated": ()}
+        named[kind] = tuple(entries)
+        await signals.asend(presence_changed, Presence, topic=topic, **named)
 
 
 def _query(text: str) -> sql.Composed:
@@ -250,7 +268,7 @@ _CLOSE = _query("UPDATE {} SET closed_at = now() WHERE stream = ANY(%s) AND clos
 
 
 def present(topic: str) -> list[Presence]:
-    """The readers of `topic`, each identity once, in the order they joined.
+    """The readers of `topic`, each identity once, in the order they joined, with their newest meta.
 
     Expired rows and rows closed past the grace period do not count, even before a sweep deletes them.
     """
@@ -259,7 +277,8 @@ def present(topic: str) -> list[Presence]:
     entries = PresenceEntry.objects.using(hub_database().alias).filter(topic=topic).exclude(gone).order_by("id")
     readers: dict[str, Presence] = {}
     for identity, meta in entries.values_list("identity", "meta"):
-        readers.setdefault(identity, Presence(identity, meta))
+        # The position of the first row, the meta of the newest, such as a new name.
+        readers[identity] = Presence(identity, meta)
     return list(readers.values())
 
 
