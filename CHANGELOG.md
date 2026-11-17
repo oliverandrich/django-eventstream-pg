@@ -1,12 +1,16 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-17)
 
 ### 🚀 Features
 - **Presence**: the optional app `django_pg_sse.presence` tracks who has a topic open.
   `present()` and `apresent()` list the readers; the `presence_changed` signal reports joins and leaves.
   `PG_SSE["PRESENCE_TOPICS"]` selects the tracked topics, and `PG_SSE["PRESENCE_IDENTITY"]` names each reader.
 - **`StreamInfo.request`** gives receivers of `stream_opened` and `stream_closed` the request that opened the stream.
+
+### 📚 Documentation
+- **Presence** has its own page, and the settings page lists `PRESENCE_TOPICS` and `PRESENCE_IDENTITY`.
+- The README guards `beforeend` appends against an element the page already shows, instead of relying on stable ids.
 
 ## 0.1.0 (2026-11-16)
 
