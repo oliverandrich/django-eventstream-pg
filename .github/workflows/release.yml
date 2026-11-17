@@ -147,7 +147,7 @@ jobs:
       contents: read
       actions: read # the zizmor job reads workflow definitions
       security-events: write # the zizmor job uploads SARIF results
-    uses: ./.github/workflows/test.yml
+    uses: $/.github/workflows/test.yml
 
   publish-to-testpypi:
     name: Publish Python 🐍 distribution 📦 to TestPyPI
