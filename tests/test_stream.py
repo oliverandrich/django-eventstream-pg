@@ -862,6 +862,14 @@ class SignalsTest(StreamTestCase):
         self.assertEqual(stream.topics, (f"user:{user.pk}", "public:news"))
 
     @stops_the_hub
+    async def test_an_opened_stream_carries_its_request(self):
+        received = self.record()
+        await self.open_stream("public:news")
+        ((_, stream),) = received
+        self.assertEqual(stream.request.path, "/events/")
+        self.assertEqual(stream.request.GET.getlist("topic"), ["public:news"])
+
+    @stops_the_hub
     async def test_an_anonymous_stream_has_no_owner(self):
         received = self.record()
         await self.open_stream("public:news")

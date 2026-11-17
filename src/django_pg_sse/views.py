@@ -89,7 +89,7 @@ def _authorize(
         authorized_at = known or 0
     else:
         owner, authorized_at = Owner(()), 0
-    info = StreamInfo(id=uuid.uuid4().hex, user_pk=user_pk, session=session, topics=tuple(topics))
+    info = StreamInfo(id=uuid.uuid4().hex, user_pk=user_pk, session=session, topics=tuple(topics), request=request)
     return owner, authorized_at, EventIds(owner, topics), info
 
 

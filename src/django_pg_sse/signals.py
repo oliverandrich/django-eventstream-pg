@@ -1,8 +1,9 @@
 """Signals for the lifecycle of a stream, such as for presence or metrics."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from django.dispatch import Signal
+from django.http import HttpRequest
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,8 @@ class StreamInfo:
     session: str | None
     #: The topics of the stream, in the order of the query string.
     topics: tuple[str, ...]
+    #: The request that opened the stream. Its session and user load lazily, so read them in sync code.
+    request: HttpRequest = field(compare=False, repr=False)
 
 
 #: Sent with sender=StreamInfo once a stream's subscription is in place, before its first message.
