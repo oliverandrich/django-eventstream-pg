@@ -19,7 +19,7 @@ src/django_pg_sse/
 ├── signals.py       # stream_opened, stream_closed, StreamInfo; asend() and close_connection()
 ├── permissions.py   # the default can_subscribe() policy
 ├── conf.py          # the PG_SSE setting and its defaults
-├── checks.py        # system checks E001 to E005 and W001: PostgreSQL, PG_SSE values, middleware
+├── checks.py        # system checks E001 to E005, W001 middleware, W002/W003 pool (--deploy)
 ├── models.py        # StreamEvent, the stored events
 ├── management/commands/prune_stream_events.py
 └── presence/        # optional app django_pg_sse.presence, label django_pg_sse_presence

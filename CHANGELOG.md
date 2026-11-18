@@ -12,6 +12,12 @@
 - **`signals.close_connection()` also closes `PG_SSE["DATABASE"]`**, which `present()` reads through.
   It leaves a connection in an atomic block open.
 
+### 🚀 Features
+- **System checks `pg_sse.W002` and `pg_sse.W003`** warn under `check --deploy` when `default` or the hub's alias has no connection pool.
+
+### 📚 Documentation
+- The deployment guide and the README recommend Django's connection pool under ASGI and explain the cost without it.
+
 ## 0.3.0 (2026-11-17)
 
 ### 🚀 Features

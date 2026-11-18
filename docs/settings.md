@@ -96,6 +96,10 @@ They add these libpq defaults, which a key in `OPTIONS` replaces:
 | `keepalives_count` | `3` |
 | `tcp_user_timeout` | `30000` (milliseconds; Linux only) |
 
+Django's own connections to `default` and to the hub's alias should use Django's pool, `OPTIONS["pool"]`.
+`manage.py check --deploy` warns without it: `pg_sse.W002` for `default`, `pg_sse.W003` for the hub's alias.
+[Deployment](deployment.md#djangos-connection-pool) explains why.
+
 ### `SECRET_KEY` and `SECRET_KEY_FALLBACKS`
 
 `Last-Event-ID` values are signed with `SECRET_KEY`.

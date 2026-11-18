@@ -27,16 +27,12 @@ def is_positive_number(value: Any) -> bool:
 def check_postgresql(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
     """pg_sse.E001: the default database and the hub's database must be PostgreSQL."""
     # LISTEN/NOTIFY and advisory locks exist only in PostgreSQL.
-    # check_hub_database() reports a hub alias that DATABASES lacks.
-    aliases: set[str] = {DEFAULT_DB_ALIAS}
-    if _defined(hub := conf.get("DATABASE")):
-        aliases.add(hub)
     return [
         Error(
             f"django-pg-sse needs PostgreSQL, but the database {alias!r} is {connections[alias].vendor}.",
             id="pg_sse.E001",
         )
-        for alias in sorted(aliases)
+        for alias in _aliases()
         if connections[alias].vendor != "postgresql"
     ]
 
@@ -91,6 +87,41 @@ def check_middleware(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> 
             id="pg_sse.W001",
         )
     ]
+
+
+def check_connection_pool(app_configs: Sequence[AppConfig] | None, **kwargs: Any) -> list[CheckMessage]:  # noqa: ARG001
+    """pg_sse.W002 for default, W003 for PG_SSE["DATABASE"], with check --deploy: use Django's pool.
+
+    Under ASGI each request's sync code runs in a thread of its own, and Django advises a pool.
+    django-pg-sse closes the signal receivers' connections after each signal.
+    Without a pool, both open a new PostgreSQL connection each time.
+    Two ids let a project behind PgBouncer silence default alone.
+    """
+    return [
+        Warning(
+            f"The database {alias!r} has no connection pool; under ASGI its connections are not reused.",
+            hint=f'Set DATABASES[{alias!r}]["OPTIONS"]["pool"] to True; it needs psycopg[pool] '
+            "and CONN_MAX_AGE 0. Silence this check if a PgBouncer in transaction mode pools this alias.",
+            id="pg_sse.W002" if alias == DEFAULT_DB_ALIAS else "pg_sse.W003",
+        )
+        for alias in _aliases()
+        # check_postgresql() reports another database; only PostgreSQL has the pool option.
+        if connections[alias].vendor == "postgresql" and not _has_pool(alias)
+    ]
+
+
+def _has_pool(alias: str) -> bool:
+    # OPTIONS may be None in a settings file built from the environment.
+    options: dict[str, Any] = connections[alias].settings_dict.get("OPTIONS") or {}
+    return bool(options.get("pool"))
+
+
+def _aliases() -> list[str]:
+    """default and the hub's alias, if DATABASES defines it; check_hub_database() reports it otherwise."""
+    aliases = {DEFAULT_DB_ALIAS}
+    if _defined(hub := conf.get("DATABASE")):
+        aliases.add(hub)
+    return sorted(aliases)
 
 
 def _defined(alias: Any) -> bool:

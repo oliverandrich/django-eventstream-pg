@@ -92,6 +92,32 @@ Add both when you set `max_connections`.
 
 [Database connections](index.md#database-connections) lists which settings and `OPTIONS` the hub uses.
 
+### Django's connection pool
+
+Django's documentation advises a connection pool under ASGI in place of persistent connections.
+Each request's sync code runs in a thread of its own, so `CONN_MAX_AGE` reuses nothing.
+Signal receivers, such as presence, run their sync code in asgiref's shared sync thread.
+`django-pg-sse` closes that thread's connections to `default` and the hub's alias after each signal.
+With Django's pool, closing returns a connection to the pool.
+Without one, each signal and each request opens a new PostgreSQL connection.
+
+Turn the pool on for both aliases:
+
+```python
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "app",
+        "OPTIONS": {"pool": True},
+    },
+}
+```
+
+The pool needs `psycopg[pool]`, and `CONN_MAX_AGE` must stay `0`.
+`manage.py check --deploy` warns with `pg_sse.W002` for `default` and `pg_sse.W003` for the hub's alias.
+A PgBouncer in transaction mode pools for `default`; silence `pg_sse.W002` in `SILENCED_SYSTEM_CHECKS` then.
+A hub alias that bypasses PgBouncer still needs Django's pool, which `pg_sse.W003` reports.
+
 ### Timeouts
 
 The hub's connections add libpq defaults for `connect_timeout`, keepalives and `tcp_user_timeout`.
@@ -121,6 +147,7 @@ DATABASES = {
         "HOST": "postgres",
         "PORT": 5432,
         "NAME": "app",
+        "OPTIONS": {"pool": True},
     },
 }
 PG_SSE = {"DATABASE": "direct"}
@@ -246,6 +273,7 @@ def prune_stream_events():
 A failed query of an opening stream ends that stream; the ASGI server logs its traceback.
 
 `manage.py check` runs the system checks `pg_sse.E001` to `pg_sse.E005` and `pg_sse.W001`.
+`manage.py check --deploy` adds `pg_sse.W002` and `pg_sse.W003`, which warn about a database without Django's pool.
 The signals `stream_opened` and `stream_closed` can count open streams, for example as a gauge:
 
 ```python

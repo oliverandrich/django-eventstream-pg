@@ -53,6 +53,7 @@
 .. autofunction:: django_pg_sse.checks.check_query_timeout
 .. autofunction:: django_pg_sse.checks.check_hub_database
 .. autofunction:: django_pg_sse.checks.check_middleware
+.. autofunction:: django_pg_sse.checks.check_connection_pool
 .. autofunction:: django_pg_sse.presence.checks.check_presence_topics
 .. autofunction:: django_pg_sse.presence.checks.check_presence_identity
 ```

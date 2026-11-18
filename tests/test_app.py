@@ -1,6 +1,9 @@
+import contextlib
+from typing import Any
 from unittest import mock
 
 from django.conf import settings
+from django.core.checks.registry import registry
 from django.core.management import call_command
 from django.db import connections
 from django.http import HttpRequest
@@ -76,6 +79,58 @@ class CheckTest(SimpleTestCase):
             warnings = checks.check_middleware(None)
         self.assertEqual([warning.id for warning in warnings], ["pg_sse.W001"])
         self.assertEqual(checks.check_middleware(None), [])
+
+
+class ConnectionPoolCheckTest(SimpleTestCase):
+    def pools(self, **pools: bool) -> contextlib.ExitStack:
+        """Turn Django's connection pool on or off per alias for the duration of the block."""
+        stack = contextlib.ExitStack()
+        for alias, pool in pools.items():
+            current: dict[str, Any] = connections[alias].settings_dict.get("OPTIONS") or {}
+            options = {**current, "pool": pool}
+            stack.enter_context(mock.patch.dict(connections[alias].settings_dict, OPTIONS=options))
+        return stack
+
+    def warnings(self) -> list[tuple[str, str]]:
+        return [(warning.id or "", warning.msg) for warning in checks.check_connection_pool(None)]
+
+    @override_settings(PG_SSE={})
+    def test_default_without_a_pool_is_w002(self):
+        with self.pools(default=False):
+            ((check_id, message),) = self.warnings()
+        self.assertEqual(check_id, "pg_sse.W002")
+        self.assertIn("'default'", message)
+        with self.pools(default=True):
+            self.assertEqual(self.warnings(), [])
+
+    @override_settings(PG_SSE={"DATABASE": "direct"})
+    def test_the_hub_alias_without_a_pool_is_w003(self):
+        # Behind PgBouncer, a project silences W002 for default and keeps W003 for the direct alias.
+        with self.pools(default=True, direct=False):
+            self.assertEqual([check_id for check_id, _ in self.warnings()], ["pg_sse.W003"])
+        with self.pools(default=False, direct=False):
+            self.assertEqual([check_id for check_id, _ in self.warnings()], ["pg_sse.W002", "pg_sse.W003"])
+        with self.pools(default=True, direct=True):
+            self.assertEqual(self.warnings(), [])
+
+    @override_settings(PG_SSE={"DATABASE": "missing"})
+    def test_an_undefined_hub_alias_is_left_to_e005(self):
+        with self.pools(default=True):
+            self.assertEqual(self.warnings(), [])
+
+    @override_settings(PG_SSE={})
+    def test_another_database_is_left_to_e001(self):
+        with self.pools(default=False), mock.patch.object(connections["default"], "vendor", "sqlite"):
+            self.assertEqual(self.warnings(), [])
+
+    @override_settings(PG_SSE={})
+    def test_options_set_to_none_count_as_no_pool(self):
+        with mock.patch.dict(connections["default"].settings_dict, OPTIONS=None):
+            self.assertEqual([check_id for check_id, _ in self.warnings()], ["pg_sse.W002"])
+
+    def test_it_runs_with_the_deploy_checks_only(self):
+        self.assertIn(checks.check_connection_pool, registry.get_checks(include_deployment_checks=True))
+        self.assertNotIn(checks.check_connection_pool, registry.get_checks(include_deployment_checks=False))
 
 
 class MigrationsTest(TestCase):

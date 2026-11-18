@@ -233,6 +233,12 @@ A worker therefore holds up to 2 + `STREAM_CONNECTIONS` connections.
   [Settings](https://django-pg-sse.readthedocs.io/en/latest/settings.html#databases) lists them;
   a key in `OPTIONS` replaces its default.
 
+Turn on Django's connection pool, `OPTIONS: {"pool": True}`, for `default` and the hub's alias.
+Under ASGI, Django reuses connections only through a pool.
+django-pg-sse closes the receivers' connections after each signal; without a pool, the next one connects anew.
+`manage.py check --deploy` warns with `pg_sse.W002` for `default` and `pg_sse.W003` for the hub's alias.
+Behind a PgBouncer in transaction mode, which pools `default` itself, silence `pg_sse.W002`.
+
 ## How it works
 
 - `broadcast()` writes the event after the commit, in a short transaction that holds an advisory

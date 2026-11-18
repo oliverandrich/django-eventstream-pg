@@ -14,6 +14,7 @@ class PgSseConfig(AppConfig):
 
     def ready(self) -> None:
         from django_pg_sse.checks import (
+            check_connection_pool,
             check_hub_database,
             check_middleware,
             check_postgresql,
@@ -31,6 +32,8 @@ class PgSseConfig(AppConfig):
             check_middleware,
         ):
             checks.register(check)
+        # A development database rarely has a pool, so only check --deploy reports it.
+        checks.register(check_connection_pool, deploy=True)
         if apps.is_installed("django.contrib.auth"):
             from django.contrib.auth.signals import user_logged_out
 
