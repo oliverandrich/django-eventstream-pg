@@ -18,6 +18,7 @@
 ### 📚 Documentation
 - The deployment guide and the README recommend Django's connection pool under ASGI and explain the cost without it.
 - The deployment guide explains granian's backpressure, which limits the open streams per worker.
+- The deployment guide shows load test results with 1000 and 2000 streams on one worker.
 
 ## 0.3.0 (2026-11-17)
 

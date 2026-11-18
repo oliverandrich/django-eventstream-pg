@@ -75,7 +75,23 @@ Further connections wait, and a client may give up before it gets a turn.
 Raise the limit for many open tabs, such as `--backpressure 8192` or `GRANIAN_BACKPRESSURE=8192`.
 Each stream also holds a file descriptor, so `ulimit -n` must allow as many.
 
-In a load test, one granian worker held 2000 streams with `--backpressure 8192` and delivered every message.
+### Load test
+
+The [demo chat](https://github.com/oliverandrich/django-pg-sse-demo#load-test) ships a load test script.
+Each client joins with a name, so presence tracks it, and opens one stream.
+A sender then posts 10 messages per second, and every client measures each message's delay.
+These runs used one granian worker with `--backpressure 8192`, on one MacBook with a local PostgreSQL:
+
+| Streams | Connected after | Lost | Delay p50 / p99 | Worker RSS |
+|---|---|---|---|---|
+| 1000 | 10.5 s | 0 | 28 / 45 ms | 222 MB |
+| 2000 | 21.2 s | 0 | 46 / 103 ms | 364 MB |
+
+The clients arrived at 100 per second, so both runs connected as fast as they arrived.
+
+The demo's presence receiver sends at most one online list per second, and the list has a fixed size.
+A receiver that sends all names on every join does work that grows with the square of the readers.
+With such a receiver, 2000 clients needed 90 seconds to connect, and the worker grew to 834 MB.
 
 ## Database
 
