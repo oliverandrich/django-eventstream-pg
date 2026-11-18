@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-18)
 
 ### 🐛 Bug Fixes
 - **Receivers run their sync code outside the stream's thread**: this applies to `stream_opened`, `stream_closed` and `presence_changed`.
@@ -17,6 +17,7 @@
 
 ### 📚 Documentation
 - The deployment guide and the README recommend Django's connection pool under ASGI and explain the cost without it.
+- The deployment guide explains granian's backpressure, which limits the open streams per worker.
 
 ## 0.3.0 (2026-11-17)
 
