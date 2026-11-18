@@ -32,7 +32,8 @@ run = "uv run pytest --cov --cov-report=term"
 
 [tasks."test-all"]
 description = "Run the full Python/Django matrix via tox"
-run = "uvx --with tox-uv --with tox-gh-actions tox"
+# tox 4.67.14 removed tox.config.of_type._PLACE_HOLDER, which tox-gh-actions 3.5.0 imports.
+run = "uvx --with tox-uv --with tox-gh-actions --from 'tox<4.67.14' tox"
 
 [tasks."build-docs"]
 description = "Build the docs, failing on any Sphinx warning"
