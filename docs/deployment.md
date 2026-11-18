@@ -74,6 +74,8 @@ So one worker holds 1024 streams, and each of four workers holds 256.
 Further connections wait, and a client may give up before it gets a turn.
 Raise the limit for many open tabs, such as `--backpressure 8192` or `GRANIAN_BACKPRESSURE=8192`.
 Each stream also holds a file descriptor, so `ulimit -n` must allow as many.
+In the load test below, each stream from 1000 to 2000 added about 140 KB to the worker.
+Django runs each request's sync code in its own thread, and a stream keeps that thread until it ends.
 
 ### Load test
 
