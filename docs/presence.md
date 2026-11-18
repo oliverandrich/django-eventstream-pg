@@ -90,6 +90,10 @@ async def show_who_is_here(sender, topic, joined, left, **kwargs):
 The signal is sent in the ASGI worker that saw the change, once per change across all workers.
 Readers of the topic see presence through the same stream, so `CAN_SUBSCRIBE` also decides who sees it.
 
+Under an ASGI server, receivers run their sync code in asgiref's shared sync thread, not in the stream's.
+Tasks they start do the same, so `apresent()` or the ORM there holds no connection per open stream.
+The shared thread runs one call at a time, so a slow sync receiver delays the others in that worker.
+
 htmx's `hx-sse` closes the stream of a hidden tab by default, so its reader leaves after a few seconds.
 Browsers differ in when they report a page as hidden, such as a covered window or one on another desktop.
 To keep a hidden tab present, turn the pause off on the stream element:

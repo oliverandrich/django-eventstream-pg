@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### 🐛 Bug Fixes
+- **Receivers run their sync code outside the stream's thread**: this applies to `stream_opened`, `stream_closed` and `presence_changed`.
+  Before, a task a receiver started ran its sync code in the stream's thread.
+  That thread kept a connection until the browser left.
+  Enough open streams emptied Django's pool, and other requests failed with `PoolTimeout`.
+  Under an ASGI server, receivers and their tasks now use asgiref's shared sync thread.
+  They keep the request's language and script prefix.
+- **`signals.close_connection()` also closes `PG_SSE["DATABASE"]`**, which `present()` reads through.
+  It leaves a connection in an atomic block open.
+
 ## 0.3.0 (2026-11-17)
 
 ### 🚀 Features

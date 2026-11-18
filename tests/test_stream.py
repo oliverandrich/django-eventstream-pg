@@ -11,7 +11,7 @@ from typing import Any
 from unittest import mock
 
 import psycopg
-from asgiref.sync import sync_to_async
+from asgiref.sync import ThreadSensitiveContext, sync_to_async
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.sessions.backends.db import SessionStore
@@ -19,6 +19,7 @@ from django.core.exceptions import SynchronousOnlyOperation
 from django.db import DEFAULT_DB_ALIAS, connection, connections, transaction
 from django.http import HttpRequest, HttpResponseBase, StreamingHttpResponse
 from django.test import AsyncClient, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings
+from django.utils import translation
 from psycopg import sql
 
 from django_pg_sse import hub as hub_module
@@ -139,12 +140,12 @@ class StreamTest(StreamTestCase):
     @stops_the_hub
     async def test_returns_its_connection_after_the_response_middleware(self):
         # Middleware such as SESSION_SAVE_EVERY_REQUEST queries after the view returns.
-        with mock.patch.object(signals, "connection") as view_connection:
+        with mock.patch.object(signals, "close_connection") as close_connection:
             response = await AsyncClient().get("/events/?topic=public:news")
-            view_connection.close.assert_not_called()
+            close_connection.assert_not_called()
             await asyncio.wait_for(anext(content_of(response)), 5)
-        # Receivers of stream_opened, such as presence, close it once more.
-        view_connection.close.assert_called_with()
+        # The view closes the request thread's connection before the stream starts.
+        close_connection.assert_called_with()
 
     @stops_the_hub
     async def test_an_unexpected_error_restarts_the_listener(self):
@@ -1043,6 +1044,105 @@ class SignalsTest(StreamTestCase):
         assert isinstance(content, AsyncGenerator)
         await content.aclose()
         self.assertEqual(received, [])
+
+
+def open_aliases() -> list[str]:
+    """The aliases with an open connection in the calling thread."""
+    return [alias for alias in ("default", "direct") if connections[alias].connection is not None]
+
+
+@override_settings(PG_SSE={"DATABASE": "direct"})
+class ReceiverThreadTest(TransactionTestCase):
+    """Under ASGI a stream's sync thread lives as long as the stream, and so does its connection."""
+
+    databases = {"default", "direct"}
+
+    def setUp(self):
+        super().setUp()
+        # The tasks the receivers start, and the request's own sync thread.
+        self.tasks: list[asyncio.Task[None]] = []
+        self.request_thread = 0
+        self.addCleanup(asyncio.run, self.close_shared_thread())
+
+    async def in_shared_thread[T](self, function: Callable[[], T]) -> T:
+        """Run `function` in the thread where asend() runs the receivers' sync code."""
+        loop = asyncio.get_running_loop()
+        return await loop.create_task(sync_to_async(function)(), context=signals.outside_request_thread())
+
+    async def close_shared_thread(self) -> None:
+        await self.in_shared_thread(connections.close_all)
+
+    def send_in_a_request(self, receiver: Callable[..., Any]) -> tuple[list[str], list[str]]:
+        """Send stream_opened from a request's context.
+
+        Return the aliases left open in the request's thread and in the shared thread.
+        """
+        signals.stream_opened.connect(receiver, weak=False)
+        self.addCleanup(signals.stream_opened.disconnect, receiver)
+
+        async def request() -> tuple[list[str], list[str]]:
+            # The ASGI handler runs each request, the stream's body included, in such a context.
+            async with ThreadSensitiveContext():
+                self.request_thread = await sync_to_async(threading.get_ident)()
+                await signals.asend(signals.stream_opened, signals.StreamInfo, stream=None)
+                shared = await self.in_shared_thread(open_aliases)
+                await asyncio.gather(*self.tasks)
+                return await sync_to_async(open_aliases)(), shared
+
+        # asyncio.run(), as an ASGI server: async_to_sync() would send all sync code to this thread.
+        return asyncio.run(request())
+
+    def test_a_receivers_task_queries_outside_the_streams_thread(self):
+        threads: list[int] = []
+
+        async def query() -> None:
+            await StreamEvent.objects.aexists()
+            threads.append(await sync_to_async(threading.get_ident)())
+
+        async def receiver(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            self.tasks.append(asyncio.get_running_loop().create_task(query()))
+
+        request, _ = self.send_in_a_request(receiver)
+        self.assertEqual(request, [])
+        self.assertNotIn(self.request_thread, threads)
+
+    def test_a_sync_receiver_queries_outside_the_streams_thread(self):
+        threads: list[int] = []
+
+        def receiver(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            connections["direct"].ensure_connection()
+            threads.append(threading.get_ident())
+
+        # asend() closes what the receiver opened in the shared thread.
+        self.assertEqual(self.send_in_a_request(receiver), ([], []))
+        self.assertNotIn(self.request_thread, threads)
+
+    def test_a_receiver_keeps_the_requests_language(self):
+        languages: list[str] = []
+
+        def receiver(sender: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            languages.append(translation.get_language())
+
+        # LocaleMiddleware activates the language in the request's context.
+        with translation.override("de"):
+            self.send_in_a_request(receiver)
+        self.assertEqual(languages, ["de"])
+
+    def test_close_connection_closes_default_and_the_hub_alias(self):
+        for alias in ("default", "direct"):
+            connections[alias].ensure_connection()
+        signals.close_connection()
+        self.assertEqual(open_aliases(), [])
+
+    def test_close_connection_leaves_an_atomic_block_open(self):
+        # close() would roll the block back and drop its on_commit callbacks, such as a broadcast.
+        with transaction.atomic(), transaction.atomic(using="direct"):
+            for alias in ("default", "direct"):
+                connections[alias].ensure_connection()
+            signals.close_connection()
+            self.assertEqual(open_aliases(), ["default", "direct"])
+            publish.broadcast("public:news", "hi")
+        self.assertTrue(StreamEvent.objects.filter(topic="public:news").exists())
 
 
 class CloseStreamsArgumentsTest(SimpleTestCase):

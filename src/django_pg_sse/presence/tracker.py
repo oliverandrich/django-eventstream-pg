@@ -71,7 +71,7 @@ class Tracker:
             return
         identity_function = import_string(conf.get("PRESENCE_IDENTITY"))
         # The identity function may read the session, which loads from the database.
-        # signals.asend() closes the request thread's connection after this receiver.
+        # signals.asend() closes the shared sync thread's connections after this receiver.
         found = await sync_to_async(identity_function)(info.request)
         # Hub.stop() may have stopped this tracker while the identity function ran.
         if found is None or self.stopped:
