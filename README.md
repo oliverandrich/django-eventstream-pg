@@ -1,5 +1,16 @@
 # django-pg-sse
 
+[![Tests](https://img.shields.io/github/actions/workflow/status/oliverandrich/django-pg-sse/test.yml?branch=main)](https://github.com/oliverandrich/django-pg-sse/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/django-pg-sse.svg)](https://pypi.org/project/django-pg-sse/)
+[![Docs](https://readthedocs.org/projects/django-pg-sse/badge/?version=latest)](https://django-pg-sse.readthedocs.io/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![License](https://img.shields.io/pypi/l/django-pg-sse)](https://github.com/oliverandrich/django-pg-sse/blob/main/LICENSE)
+[![Django versions](https://img.shields.io/pypi/frameworkversions/django/django-pg-sse)](https://pypi.org/project/django-pg-sse/)
+[![Python versions](https://img.shields.io/pypi/pyversions/django-pg-sse)](https://pypi.org/project/django-pg-sse/)
+[![Downloads](https://static.pepy.tech/badge/django-pg-sse)](https://pepy.tech/project/django-pg-sse)
+[![Downloads/month](https://static.pepy.tech/badge/django-pg-sse/month)](https://pepy.tech/project/django-pg-sse)
+
 Documentation: <https://django-pg-sse.readthedocs.io/>, with the
 [settings](https://django-pg-sse.readthedocs.io/en/latest/settings.html), a
 [deployment guide](https://django-pg-sse.readthedocs.io/en/latest/deployment.html),
